@@ -34,6 +34,12 @@ def default_num_step() -> int:
     return get_settings().tts_num_step
 
 
+def default_first_num_step() -> int:
+    from ..common.config import get_settings
+
+    return get_settings().tts_first_chunk_num_step
+
+
 #: OmniVoice uses ISO 639-3 style ids, so the ISO 639-1 codes the REST API
 #: accepts ('ar', 'en') must be translated. An unmapped code makes the library
 #: silently fall back to language-agnostic mode, which degrades pronunciation.
@@ -77,12 +83,18 @@ class OmniVoiceTts:
         realtime_capable: bool,
         notes: str = "",
         num_step: int | None = None,
+        first_num_step: int | None = None,
     ) -> None:
         self.device = device
         self.dtype_name = dtype
         #: Diffusion steps. The library default is 32; fewer is faster but
-        #: lower quality. This is the main TTS latency knob.
+        #: lower quality. This is the main TTS latency knob: latency is very
+        #: nearly linear in steps (~48 ms/step on an RTX 4050) and almost flat
+        #: in text length below ~65 characters.
         self.num_step = num_step
+        #: Steps for the playback-gating chunk only. ``None`` means "same as
+        #: num_step".
+        self.first_num_step = first_num_step
         self._model = None
         self._offloaded = False
         self.info = EngineInfo(
@@ -93,6 +105,8 @@ class OmniVoiceTts:
             rtf_estimate=rtf_estimate,
             realtime_capable=realtime_capable,
             notes=notes,
+            # Measured by scripts/vram_budget.py on an RTX 4050 Laptop.
+            vram_mib=1937 if device != "cpu" else 0,
         )
 
     def load(self) -> None:
@@ -140,7 +154,7 @@ class OmniVoiceTts:
         # OmniVoice handles both cloning (ref audio) and voice design (instruct).
         return True
 
-    def _generate(self, text: str, voice: Voice) -> np.ndarray:
+    def _generate(self, text: str, voice: Voice, num_step: int | None = None) -> np.ndarray:
         from omnivoice import OmniVoiceGenerationConfig
 
         kwargs: dict[str, object] = {"text": text, "language": resolve_language(voice.language)}
@@ -154,8 +168,9 @@ class OmniVoiceTts:
             # a random voice instead of the designed one.
             kwargs["instruct"] = voice.description
 
-        if self.num_step is not None:
-            kwargs["generation_config"] = OmniVoiceGenerationConfig(num_step=self.num_step)
+        steps = num_step if num_step is not None else self.num_step
+        if steps is not None:
+            kwargs["generation_config"] = OmniVoiceGenerationConfig(num_step=steps)
 
         audio = self._model.generate(**kwargs)
         # `.generate` returns a list of np.ndarray (T,) at 24 kHz.
@@ -163,7 +178,7 @@ class OmniVoiceTts:
             audio = audio[0]
         return np.asarray(audio, dtype=np.float32)
 
-    def synthesize(self, text: str, voice: Voice) -> Iterator[AudioChunk]:
+    def synthesize(self, text: str, voice: Voice, urgent: bool = False) -> Iterator[AudioChunk]:
         self.load()
         chunks = chunk_text(text)
         if not chunks:
@@ -171,7 +186,11 @@ class OmniVoiceTts:
             return
 
         for i, piece in enumerate(chunks):
-            samples = self._generate(piece, voice)
+            # Diffusion cost is ~linear in steps and nearly flat in text
+            # length, so only the very first piece -- the one the listener is
+            # waiting on in silence -- is worth degrading.
+            steps = self.first_num_step if (urgent and i == 0) else None
+            samples = self._generate(piece, voice, steps)
             yield AudioChunk(samples, SAMPLE_RATE_OUT, is_final=(i == len(chunks) - 1))
 
 
@@ -184,6 +203,7 @@ def build_gpu(device: str = "cuda:0") -> OmniVoiceTts:
         realtime_capable=True,
         notes="Zero-shot cloning + voice design. Weights are CC-BY-NC.",
         num_step=default_num_step(),
+        first_num_step=default_first_num_step(),
     )
 
 
@@ -198,4 +218,5 @@ def build_cpu() -> OmniVoiceTts:
         realtime_capable=True,
         notes="CPU cloning. Benchmark before trusting for realtime.",
         num_step=default_num_step(),
+        first_num_step=default_first_num_step(),
     )

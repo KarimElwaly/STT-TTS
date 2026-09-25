@@ -91,13 +91,17 @@ class VoiceCore:
         )
         self.vad = build_vad(self.vad_config)
 
-        self.residency, self.residency_reason = resolve_residency(self.resolution, self.settings)
+        self.residency, self.residency_reason = resolve_residency(
+            self.resolution, self.settings, self._vram_needed()
+        )
         if self.residency is Residency.EXCLUSIVE:
             # STT and TTS alternate within a turn, so a single lock serializes
             # them and guarantees only one model is on the GPU at any moment.
             self._tts_lock = self._stt_lock
             log.info("GPU residency: exclusive (%s)", self.residency_reason)
             self._resolve_allocator_conflict()
+        else:
+            log.info("GPU residency: shared (%s)", self.residency_reason)
 
         if not self.stt.info.realtime_capable:
             log.warning(
@@ -144,6 +148,19 @@ class VoiceCore:
         self._ready = False
 
     # -- GPU residency -----------------------------------------------------
+    def _vram_needed(self) -> int:
+        """Summed VRAM footprint of the engines that would be resident at once.
+
+        Only the *active* STT and TTS count: alternates are built lazily and
+        never share a turn with the primary. Returns 0 if any engine declines
+        to declare a footprint, which makes residency fall back to a threshold
+        rather than act on a number it half-knows.
+        """
+        engines = [e for e in (self.stt, self.tts) if e is not None]
+        if any(e.info.vram_mib == 0 for e in engines):
+            return 0
+        return sum(e.info.vram_mib for e in engines)
+
     def _resolve_allocator_conflict(self) -> None:
         """Keep every GPU-resident engine inside one CUDA allocator family.
 
@@ -248,7 +265,9 @@ class VoiceCore:
             f"(clone={voice.is_clone}, profile={self.profile.value})."
         )
 
-    async def synthesize(self, text: str, voice_id: str | None = None) -> AsyncIterator[AudioChunk]:
+    async def synthesize(
+        self, text: str, voice_id: str | None = None, urgent: bool = False
+    ) -> AsyncIterator[AudioChunk]:
         if self.tts_error is not None:
             raise self.tts_error
         voice = self.resolve_voice(voice_id)
@@ -262,7 +281,7 @@ class VoiceCore:
             def produce() -> None:
                 try:
                     self._claim_gpu(engine)
-                    for chunk in engine.synthesize(text, voice):
+                    for chunk in engine.synthesize(text, voice, urgent=urgent):
                         asyncio.run_coroutine_threadsafe(queue.put(chunk), loop).result()
                 except Exception as exc:  # surfaced to the consumer below
                     asyncio.run_coroutine_threadsafe(queue.put(exc), loop).result()

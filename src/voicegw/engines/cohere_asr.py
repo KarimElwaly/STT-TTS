@@ -17,7 +17,7 @@ import time
 
 import numpy as np
 
-from ..common.config import get_settings
+from ..common.config import Quantization, get_settings
 from ..common.protocols import SAMPLE_RATE_IN, EngineInfo, Transcript
 from .vad import chunk_long_audio
 
@@ -25,6 +25,46 @@ log = logging.getLogger(__name__)
 
 MODEL_ID = "CohereLabs/cohere-transcribe-arabic-07-2026"
 MAX_NEW_TOKENS = 256
+
+#: Measured loaded-weight footprint per quantization mode, in MiB
+#: (RTX 4050 Laptop, `python scripts/quant_compare.py`).
+VRAM_MIB = {
+    Quantization.NONE: 3940,
+    Quantization.INT8: 2244,
+    Quantization.NF4: 1413,
+}
+
+#: Measured single-utterance latency per mode, in ms, on the same card.
+#: Used only for the RTF estimate the realtime loop gates on.
+RTF_ESTIMATE = {
+    Quantization.NONE: 0.08,
+    Quantization.INT8: 0.40,
+    Quantization.NF4: 0.12,
+}
+
+
+def resolve_quantization(settings=None) -> Quantization:
+    """Pick a weight precision, shrinking the model only when it has to.
+
+    Full precision is both the fastest and the most faithful, so ``auto`` only
+    quantizes when the alternative is worse: a card that cannot hold STT and
+    TTS at once pays ~3.3 s of offload/onload traffic *per turn*, which dwarfs
+    the ~100 ms that nf4 adds to a transcription.
+    """
+    settings = settings or get_settings()
+    if settings.asr_quantization is not Quantization.AUTO:
+        return settings.asr_quantization
+
+    try:
+        import torch
+
+        free_mib = torch.cuda.mem_get_info()[0] // (1024 * 1024)
+    except Exception:  # pragma: no cover - driver quirks
+        return Quantization.NF4
+
+    # OmniVoice needs ~1937 MiB; see scripts/vram_budget.py.
+    both_fit = VRAM_MIB[Quantization.NONE] + 1937 + settings.vram_headroom_mib <= free_mib
+    return Quantization.NONE if both_fit else Quantization.NF4
 
 
 class CohereAsr:
@@ -39,10 +79,12 @@ class CohereAsr:
         realtime_capable: bool,
         notes: str = "",
         model_id: str = MODEL_ID,
+        quantization: Quantization = Quantization.NONE,
     ) -> None:
         self.model_id = model_id
         self.device = device
         self.dtype_name = dtype
+        self.quantization = quantization
         self._model = None
         self._processor = None
         self._offloaded = False
@@ -50,10 +92,15 @@ class CohereAsr:
             engine_id=engine_id,
             model_id=model_id,
             device=device,
-            dtype=dtype,
+            dtype=dtype if quantization is Quantization.NONE else f"{quantization.value}/{dtype}",
             rtf_estimate=rtf_estimate,
             realtime_capable=realtime_capable,
             notes=notes,
+            vram_mib=VRAM_MIB[quantization] if device != "cpu" else 0,
+            # bitsandbytes pins quantized weights to the device they were
+            # quantized on; `.to()` raises. They are small enough not to need
+            # swapping anyway -- that is the whole point of quantizing.
+            movable=quantization is Quantization.NONE,
         )
 
     # -- lifecycle ---------------------------------------------------------
@@ -94,12 +141,41 @@ class CohereAsr:
             low_cpu_mem_usage=True,
             token=token,
             local_files_only=local_only,
-            **({"device_map": self.device} if self.device != "cpu" else {}),
+            **self._placement_kwargs(),
         )
         if self.device == "cpu":
             self._model.to("cpu")
         self._model.eval()
-        log.info("Loaded %s on %s in %.1fs", self.model_id, self.device, time.perf_counter() - t0)
+        log.info(
+            "Loaded %s on %s (%s) in %.1fs",
+            self.model_id,
+            self.device,
+            self.info.dtype,
+            time.perf_counter() - t0,
+        )
+
+    def _placement_kwargs(self) -> dict:
+        """Device/quantization arguments for ``from_pretrained``."""
+        if self.device == "cpu":
+            return {}
+        if self.quantization is Quantization.NONE:
+            return {"device_map": self.device}
+
+        import torch
+        from transformers import BitsAndBytesConfig
+
+        if self.quantization is Quantization.INT8:
+            config = BitsAndBytesConfig(load_in_8bit=True)
+        else:
+            config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_use_double_quant=True,
+            )
+        # bitsandbytes dispatches the shards itself; passing device_map
+        # alongside it is redundant and fights that dispatch.
+        return {"quantization_config": config}
 
     def unload(self) -> None:
         self._model = None
@@ -117,6 +193,12 @@ class CohereAsr:
     def offload(self) -> None:
         """Park the weights in system RAM, freeing VRAM but avoiding a reload."""
         if self._model is None or self.device == "cpu" or self._offloaded:
+            return
+        if not self.info.movable:
+            # Quantized weights cannot leave the device they were quantized
+            # on. Ignoring the request is safe rather than wrong: such a model
+            # is small by construction, which is why residency chose SHARED.
+            log.debug("%s is quantized and stays resident", self.info.engine_id)
             return
         import torch
 
@@ -140,13 +222,22 @@ class CohereAsr:
             return_tensors="pt",
             language=language,
         )
-        inputs = inputs.to(self._model.device, dtype=self._model.dtype)
+        # The feature extractor emits float32 while the encoder's bias is
+        # bf16, and the mismatch raises instead of promoting. A quantized
+        # model reports a misleading `.dtype` (its weights are uint8), so key
+        # off the compute dtype we asked bitsandbytes for.
+        inputs = inputs.to(self._model.device, dtype=self._compute_dtype(torch))
         with torch.inference_mode():
             outputs = self._model.generate(**inputs, max_new_tokens=MAX_NEW_TOKENS)
         # `generate` returns a (batch, seq) tensor, so `decode` on it yields a
         # *list*. Use batch_decode and take the single row we asked for.
         decoded = self._processor.batch_decode(outputs, skip_special_tokens=True)
         return decoded[0].strip() if decoded else ""
+
+    def _compute_dtype(self, torch):
+        if self.quantization is Quantization.NONE:
+            return getattr(torch, self.dtype_name)
+        return torch.bfloat16
 
     def transcribe(self, audio: np.ndarray, language: str = "ar") -> Transcript:
         self.load()
@@ -161,13 +252,18 @@ class CohereAsr:
 
 
 def build_gpu(device: str = "cuda:0") -> CohereAsr:
+    quant = resolve_quantization()
+    notes = "Best Arabic/dialect accuracy. Requires accepted gated-repo terms."
+    if quant is not Quantization.NONE:
+        notes += f" Quantized to {quant.value} so TTS can stay resident too."
     return CohereAsr(
         engine_id="cohere-asr",
         device=device,
         dtype="bfloat16",
-        rtf_estimate=0.08,
+        rtf_estimate=RTF_ESTIMATE[quant],
         realtime_capable=True,
-        notes="Best Arabic/dialect accuracy. Requires accepted gated-repo terms.",
+        notes=notes,
+        quantization=quant,
     )
 
 

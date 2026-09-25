@@ -38,6 +38,33 @@ class Residency(str, Enum):
     AUTO = "auto"
 
 
+class Quantization(str, Enum):
+    """Weight precision for the PyTorch ASR model.
+
+    Measured on an RTX 4050 Laptop (6 GiB) with a 2.7 s Arabic utterance,
+    all three producing byte-identical transcripts:
+
+    ===== ========== =========
+    mode  VRAM       latency
+    ===== ========== =========
+    none  3940 MiB     210 ms
+    int8  2244 MiB    1067 ms
+    nf4   1413 MiB     310 ms
+    ===== ========== =========
+
+    ``int8`` is the worst of both worlds here: bitsandbytes' 8-bit matmul
+    costs ~5x the latency for less than half the saving of ``nf4``. It stays
+    selectable because the quality tradeoff is model- and card-dependent.
+    """
+
+    NONE = "none"
+    INT8 = "int8"
+    NF4 = "nf4"
+    #: ``nf4`` when the card is too small to hold STT and TTS at full
+    #: precision, otherwise ``none``.
+    AUTO = "auto"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="VOICEGW_",
@@ -62,8 +89,17 @@ class Settings(BaseSettings):
     min_vram_mib: int = 4500
 
     residency: Residency = Residency.AUTO
-    #: Below this much *total* VRAM, `residency=auto` chooses EXCLUSIVE.
+    #: Fallback threshold for `residency=auto` when engines do not declare a
+    #: VRAM footprint. Below this much *total* VRAM, choose EXCLUSIVE.
     shared_residency_min_vram_mib: int = 10_000
+    #: VRAM left unclaimed for activations, KV cache and fragmentation when
+    #: deciding whether both models fit at once.
+    vram_headroom_mib: int = 700
+
+    #: Quantize the PyTorch ASR weights. Shrinking the ASR model is what lets
+    #: both models stay resident on a 6 GiB card, which removes ~3.3 s of
+    #: swap traffic per conversational turn.
+    asr_quantization: Quantization = Quantization.AUTO
 
     # Realtime agent hook (any OpenAI-compatible chat completions endpoint).
     agent_base_url: str = "http://localhost:11434/v1"
@@ -72,7 +108,14 @@ class Settings(BaseSettings):
     agent_system_prompt: str = "أنت مساعد صوتي مفيد. أجب بإيجاز."
 
     #: OmniVoice diffusion steps -- the dominant TTS latency/quality knob.
+    #: Latency is ~linear in steps and nearly flat in text length below ~65
+    #: characters, so this -- not chunk size -- is what to tune.
     tts_num_step: int = 16
+    #: Steps for the first chunk of a spoken reply only. That chunk is the one
+    #: the listener waits on in silence; every later chunk is rendered while
+    #: earlier audio is still playing, so only this one is worth degrading.
+    #: Set equal to ``tts_num_step`` to disable the asymmetry.
+    tts_first_chunk_num_step: int = 8
     #: Override the faster-whisper size for both profiles (e.g. "medium").
     whisper_model: str | None = None
 
@@ -158,8 +201,18 @@ def resolve_profile(settings: Settings | None = None) -> ProfileResolution:
     return ProfileResolution(Profile.CPU, f"auto-selected: {reason}", "cpu")
 
 
-def resolve_residency(resolution: ProfileResolution, settings: Settings) -> tuple[Residency, str]:
-    """Decide whether STT and TTS may hold VRAM at the same time."""
+def resolve_residency(
+    resolution: ProfileResolution,
+    settings: Settings,
+    needed_mib: int = 0,
+) -> tuple[Residency, str]:
+    """Decide whether STT and TTS may hold VRAM at the same time.
+
+    ``needed_mib`` is the summed footprint the engines declare. When it is
+    known the decision is arithmetic -- measure what is free, compare -- which
+    is what lets a quantized ASR model flip a 6 GiB card from EXCLUSIVE to
+    SHARED. Engines that declare nothing fall back to a total-VRAM threshold.
+    """
     if resolution.profile is Profile.CPU:
         return Residency.SHARED, "cpu profile: no VRAM contention"
     if settings.residency is not Residency.AUTO:
@@ -168,9 +221,26 @@ def resolve_residency(resolution: ProfileResolution, settings: Settings) -> tupl
     try:
         import torch
 
-        total_mib = torch.cuda.mem_get_info()[1] // (1024 * 1024)
+        free_bytes, total_bytes = torch.cuda.mem_get_info()
     except Exception as exc:  # pragma: no cover - driver quirks
         return Residency.EXCLUSIVE, f"VRAM probe failed ({exc}); assuming a small GPU"
+
+    free_mib = free_bytes // (1024 * 1024)
+    total_mib = total_bytes // (1024 * 1024)
+
+    if needed_mib > 0:
+        budget = needed_mib + settings.vram_headroom_mib
+        if budget <= free_mib:
+            return (
+                Residency.SHARED,
+                f"both models need ~{needed_mib} MiB (+{settings.vram_headroom_mib} headroom) "
+                f"and {free_mib} MiB is free",
+            )
+        return (
+            Residency.EXCLUSIVE,
+            f"both models need ~{needed_mib} MiB (+{settings.vram_headroom_mib} headroom) "
+            f"but only {free_mib} MiB is free",
+        )
 
     if total_mib < settings.shared_residency_min_vram_mib:
         return (

@@ -55,6 +55,9 @@ gpu = [
     "huggingface-hub>=0.26",
     "silero-vad>=5.1",
     "omnivoice>=0.1",
+    # 4-bit ASR weights: 3940 -> 1413 MiB, which is what lets a 6 GiB card
+    # hold STT and TTS at the same time. See VOICEGW_ASR_QUANTIZATION.
+    "bitsandbytes>=0.45; platform_system != 'Darwin'",
 ]
 
 mcp = ["mcp>=1.2"]

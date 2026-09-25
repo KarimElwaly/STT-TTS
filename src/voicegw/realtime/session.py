@@ -197,7 +197,9 @@ class RealtimeSession:
 
         async def speak(piece: str) -> None:
             nonlocal header_sent
-            async for chunk in self.core.synthesize(piece, self.voice):
+            # Only the piece that starts playback is worth rushing; the rest
+            # render while this one is still being heard.
+            async for chunk in self.core.synthesize(piece, self.voice, urgent=not header_sent):
                 if not header_sent:
                     await self.send(
                         type="response.audio.start",

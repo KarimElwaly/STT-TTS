@@ -182,7 +182,11 @@ async def speech(req: SpeechRequest, core: VoiceCore = Depends(core_dep)):
     async def stream() -> AsyncIterator[bytes]:
         header_sent = False
         try:
-            async for chunk in core.synthesize(req.input, req.voice):
+            # Streaming callers play as bytes arrive, so the first chunk gates
+            # what they hear. (A non-streaming caller waits for the whole file
+            # either way, so it is not marked urgent above: degrading it would
+            # cost quality and save nothing.)
+            async for chunk in core.synthesize(req.input, req.voice, urgent=True):
                 if not header_sent and req.response_format == "wav":
                     yield wav_header(chunk.sample_rate)
                     header_sent = True

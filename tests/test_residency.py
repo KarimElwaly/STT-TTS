@@ -88,6 +88,64 @@ def test_probe_failure_is_conservative(monkeypatch):
     assert "probe failed" in reason
 
 
+# --- footprint-based resolution -------------------------------------------
+#
+# A declared footprint turns the decision from a guess into arithmetic, which
+# is what lets a quantized ASR model flip a 6 GiB card to SHARED.
+
+
+def _free(monkeypatch, mib: int):
+    import torch
+
+    monkeypatch.setattr(
+        torch.cuda,
+        "mem_get_info",
+        lambda: (mib * 1024 * 1024, 6141 * 1024 * 1024),
+        raising=False,
+    )
+
+
+def test_declared_footprint_beats_the_total_vram_threshold(monkeypatch):
+    """nf4 ASR (1413) + OmniVoice (1937) fits in 5080 MiB free."""
+    _free(monkeypatch, 5080)
+    settings = Settings(shared_residency_min_vram_mib=10_000, vram_headroom_mib=700)
+    mode, reason = resolve_residency(GPU, settings, needed_mib=1413 + 1937)
+    assert mode is Residency.SHARED
+    assert "3350 MiB" in reason
+
+
+def test_full_precision_footprint_still_forces_exclusive(monkeypatch):
+    """bf16 ASR (3940) + OmniVoice (1937) does not."""
+    _free(monkeypatch, 5080)
+    settings = Settings(shared_residency_min_vram_mib=10_000, vram_headroom_mib=700)
+    mode, reason = resolve_residency(GPU, settings, needed_mib=3940 + 1937)
+    assert mode is Residency.EXCLUSIVE
+    assert "only 5080 MiB is free" in reason
+
+
+def test_headroom_is_respected(monkeypatch):
+    """A footprint that fits only by ignoring activations must not pass."""
+    _free(monkeypatch, 3400)
+    settings = Settings(vram_headroom_mib=700)
+    mode, _ = resolve_residency(GPU, settings, needed_mib=3350)
+    assert mode is Residency.EXCLUSIVE
+
+
+def test_unknown_footprint_falls_back_to_threshold(monkeypatch):
+    _free(monkeypatch, 5080)
+    settings = Settings(shared_residency_min_vram_mib=10_000)
+    mode, reason = resolve_residency(GPU, settings, needed_mib=0)
+    assert mode is Residency.EXCLUSIVE
+    assert "total VRAM" in reason
+
+
+def test_explicit_setting_still_wins_over_footprint(monkeypatch):
+    _free(monkeypatch, 5080)
+    settings = Settings(residency=Residency.EXCLUSIVE)
+    mode, _ = resolve_residency(GPU, settings, needed_mib=100)
+    assert mode is Residency.EXCLUSIVE
+
+
 # --- swapping --------------------------------------------------------------
 
 

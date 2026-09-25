@@ -32,6 +32,7 @@ class FakeTts:
     def __init__(self, engine_id="fake-tts", supports_clone=True, chunks=3):
         self.supports_clone = supports_clone
         self.chunks = chunks
+        self.urgent_calls: list[bool] = []
         self.info = EngineInfo(engine_id, "fake", "cpu", "float32", 0.1, True)
 
     def load(self):
@@ -43,7 +44,8 @@ class FakeTts:
     def supports(self, voice: Voice) -> bool:
         return self.supports_clone or not voice.is_clone
 
-    def synthesize(self, text, voice):
+    def synthesize(self, text, voice, urgent=False):
+        self.urgent_calls.append(urgent)
         for i in range(self.chunks):
             yield AudioChunk(
                 np.full(2400, 0.1, dtype=np.float32),

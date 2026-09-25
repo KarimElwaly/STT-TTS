@@ -26,12 +26,15 @@ SAMPLE = Path("out/offline.wav")
 
 async def main() -> int:
     if not SAMPLE.is_file():
-        print(f"missing {SAMPLE}; run: voicegw say \"مرحبا\" --out {SAMPLE}")
+        print(f'missing {SAMPLE}; run: voicegw say "مرحبا" --out {SAMPLE}')
         return 1
 
     core = VoiceCore()
     await core.startup()
-    print(f"\nprofile={core.profile.value} asr={core.stt.info.engine_id} residency={core.residency.value}")
+    print(
+        f"\nprofile={core.profile.value} asr={core.stt.info.engine_id} "
+        f"residency={core.residency.value}"
+    )
     if core.stt_error:
         print(f"STT unavailable: {core.stt_error}")
         return 1
@@ -57,7 +60,10 @@ async def main() -> int:
         await core.transcribe(audio, "ar")
         timings.append((time.perf_counter() - start) * 1000)
     warm = sorted(timings)[len(timings) // 2]
-    print(f"\nwarm STT {warm:.0f} ms for {result.duration_s:.1f}s  RTF {warm / 1000 / result.duration_s:.2f}")
+    print(
+        f"\nwarm STT {warm:.0f} ms for {result.duration_s:.1f}s  "
+        f"RTF {warm / 1000 / result.duration_s:.2f}"
+    )
 
     await core.shutdown()
     return 0

@@ -71,6 +71,12 @@ class EngineInfo:
     #: ``none`` (CPU-only). Engines from different families cannot share the
     #: VRAM one of them has cached, which matters under exclusive residency.
     allocator: str = "torch"
+    #: Measured VRAM footprint of the loaded weights, in MiB. ``0`` means
+    #: "unknown" and makes residency fall back to a coarse VRAM threshold.
+    vram_mib: int = 0
+    #: Whether the weights can move between devices after loading. Quantized
+    #: models are pinned to the device they were loaded onto.
+    movable: bool = True
 
 
 @runtime_checkable
@@ -92,8 +98,14 @@ class TtsEngine(Protocol):
 
     def load(self) -> None: ...
 
-    def synthesize(self, text: str, voice: Voice) -> Iterator[AudioChunk]:
-        """Yield audio chunks as they become available (streaming-first)."""
+    def synthesize(self, text: str, voice: Voice, urgent: bool = False) -> Iterator[AudioChunk]:
+        """Yield audio chunks as they become available (streaming-first).
+
+        ``urgent`` marks the chunk that gates the start of playback: the
+        listener is waiting in silence for it, so an engine may trade fidelity
+        for latency. Later chunks are generated while earlier audio is still
+        playing and should not make that trade.
+        """
 
     def supports(self, voice: Voice) -> bool:
         """Whether this engine can render the given voice (e.g. cloning)."""

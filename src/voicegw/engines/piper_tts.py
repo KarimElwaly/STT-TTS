@@ -86,7 +86,7 @@ class PiperTts:
             buf.extend(chunk)
         return np.frombuffer(bytes(buf), dtype="<i2").astype(np.float32) / 32768.0
 
-    def synthesize(self, text: str, voice: Voice) -> Iterator[AudioChunk]:
+    def synthesize(self, text: str, voice: Voice, urgent: bool = False) -> Iterator[AudioChunk]:
         if voice.is_clone:
             raise ValueError(
                 f"Voice {voice.id!r} requires zero-shot cloning, which the piper engine "
