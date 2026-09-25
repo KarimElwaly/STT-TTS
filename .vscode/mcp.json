@@ -1,0 +1,12 @@
+{
+  "servers": {
+    "voicegw": {
+      "type": "stdio",
+      "command": "${workspaceFolder}/.venv/Scripts/voicegw.exe",
+      "args": ["mcp"],
+      "env": {
+        "VOICEGW_URL": "http://127.0.0.1:8000"
+      }
+    }
+  }
+}

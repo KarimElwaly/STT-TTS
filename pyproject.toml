@@ -1,0 +1,96 @@
+[project]
+name = "voicegw"
+version = "0.1.0"
+description = "Arabic voice gateway: Cohere Transcribe Arabic (STT) + OmniVoice (TTS) behind REST, WebSocket and MCP."
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = { text = "Apache-2.0" }
+
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "python-multipart>=0.0.12",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "numpy>=1.26",
+    "soundfile>=0.12",
+    "librosa>=0.10",
+    "httpx>=0.27",
+    "typer>=0.12",
+    "rich>=13.9",
+    "onnxruntime>=1.19",
+]
+
+[project.optional-dependencies]
+# ---------------------------------------------------------------------------
+# CPU profile. Install with:
+#   uv pip install -e ".[cpu]" --extra-index-url https://download.pytorch.org/whl/cpu
+# ---------------------------------------------------------------------------
+cpu = [
+    "torch>=2.4",
+    # torchaudio is an omnivoice dependency and is ABI-locked to torch: a
+    # mismatched pair fails at import (WinError 127 / undefined symbol).
+    # Always install it from the same PyTorch index as torch.
+    "torchaudio",
+    "transformers>=5.4.0",
+    "sentencepiece>=0.2",
+    "protobuf>=5.28",
+    "huggingface-hub>=0.26",
+    "silero-vad>=5.1",
+    "faster-whisper>=1.0.3",
+    "piper-tts>=1.2; sys_platform != 'darwin'",
+]
+
+# ---------------------------------------------------------------------------
+# GPU profile. Install with:
+#   uv pip install -e ".[gpu]" --extra-index-url https://download.pytorch.org/whl/cu124
+# ---------------------------------------------------------------------------
+gpu = [
+    "torch>=2.4",
+    "torchaudio",
+    "transformers>=5.4.0",
+    "accelerate>=1.0",
+    "sentencepiece>=0.2",
+    "protobuf>=5.28",
+    "huggingface-hub>=0.26",
+    "silero-vad>=5.1",
+    "omnivoice>=0.1",
+]
+
+mcp = ["mcp>=1.2"]
+
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.7",
+    "jiwer>=3.0",
+]
+
+[project.scripts]
+voicegw = "voicegw.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/voicegw"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+# B008: Depends()/File()/Form()/typer.Option() in defaults is the documented
+#       FastAPI and Typer idiom, not a mutable-default bug.
+# UP042: `str, Enum` keeps Typer's enum choice handling working as expected.
+ignore = ["B008", "UP042"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+markers = [
+    "gpu: requires a CUDA device",
+    "models: downloads / runs real model weights",
+]

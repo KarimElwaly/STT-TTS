@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>voicegw</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>voicegw</h1>
+      <div id="badges">
+        <span class="badge" id="profile-badge">…</span>
+        <span class="badge" id="engine-badge"></span>
+        <span class="badge" id="status-badge">disconnected</span>
+      </div>
+    </header>
+
+    <main>
+      <section id="controls">
+        <button id="connect">Connect</button>
+        <button id="talk" disabled>Hold to talk</button>
+        <label class="toggle">
+          <input type="checkbox" id="open-mic" />
+          Open mic (VAD)
+        </label>
+        <select id="voice" disabled></select>
+        <button id="stop" disabled>Stop audio</button>
+      </section>
+
+      <section id="meters">
+        <div class="meter"><span>Mic</span><progress id="level" max="1" value="0"></progress></div>
+        <div id="hud">
+          <span>ASR <b id="hud-asr">—</b></span>
+          <span>First audio <b id="hud-audio">—</b></span>
+          <span>Total <b id="hud-total">—</b></span>
+        </div>
+      </section>
+
+      <section id="transcript"></section>
+    </main>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

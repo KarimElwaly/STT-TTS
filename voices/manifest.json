@@ -1,0 +1,26 @@
+{
+  "$comment": "Two kinds of voice. (1) Cloning: ref_audio (3-15s of clean speech, path relative to this file) + ref_text (its exact transcript). (2) Voice design: `description` must be a comma-separated list from OmniVoice's fixed vocabulary - run `python scripts/omnivoice_vocab.py` to print it. Free-form prose is rejected.",
+  "voices": [
+    {
+      "id": "female_msa",
+      "label": "Female, young adult, Arabic",
+      "language": "ar",
+      "description": "female, young adult, moderate pitch",
+      "tags": ["design", "ar", "female"]
+    },
+    {
+      "id": "male_deep",
+      "label": "Male, middle-aged, low pitch, Arabic",
+      "language": "ar",
+      "description": "male, middle-aged, low pitch",
+      "tags": ["design", "ar", "male"]
+    },
+    {
+      "id": "narrator_en",
+      "label": "Narrator, British English",
+      "language": "en",
+      "description": "male, middle-aged, low pitch, british accent",
+      "tags": ["design", "en", "male"]
+    }
+  ]
+}

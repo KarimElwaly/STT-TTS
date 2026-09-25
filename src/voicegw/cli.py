@@ -1,0 +1,328 @@
+"""voicegw CLI."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from pathlib import Path
+
+import typer
+from rich.console import Console
+from rich.table import Table
+
+from .common.config import Profile, get_settings, resolve_profile
+
+app = typer.Typer(help="Arabic voice gateway: STT + TTS over REST, WebSocket and MCP.")
+console = Console()
+
+
+def _setup_logging(verbose: bool) -> None:
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.INFO,
+        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    if not verbose:
+        # Model downloads emit one INFO line per HTTP request, which buries
+        # the messages that actually matter.
+        for noisy in ("httpx", "httpcore", "urllib3", "filelock"):
+            logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
+@app.command()
+def serve(
+    host: str | None = None,
+    port: int | None = None,
+    profile: Profile | None = typer.Option(None, help="Override VOICEGW_PROFILE."),
+    reload: bool = False,
+    verbose: bool = False,
+) -> None:
+    """Run the REST + WebSocket gateway."""
+    import os
+
+    import uvicorn
+
+    _setup_logging(verbose)
+    if profile is not None:
+        os.environ["VOICEGW_PROFILE"] = profile.value
+        get_settings.cache_clear()
+
+    settings = get_settings()
+    uvicorn.run(
+        "voicegw.api.app:app",
+        host=host or settings.host,
+        port=port or settings.port,
+        reload=reload,
+        log_level="debug" if verbose else "info",
+    )
+
+
+@app.command()
+def mcp() -> None:
+    """Run the MCP server over stdio (the gateway must already be running)."""
+    from .mcp.server import main
+
+    main()
+
+
+@app.command()
+def fetch(
+    include_gated: bool = typer.Option(
+        True, help="Also fetch the gated Cohere ASR repo (needs HF_TOKEN)."
+    ),
+    force: bool = typer.Option(False, help="Re-download even if already cached."),
+    verbose: bool = False,
+) -> None:
+    """Download every model into the local cache so the gateway can run offline.
+
+    Run this once while you have a network connection, then set
+    VOICEGW_OFFLINE=1.
+    """
+    import os
+
+    from huggingface_hub import snapshot_download
+
+    from .common import offline as offline_mod
+
+    _setup_logging(verbose)
+    # Never run the fetcher in offline mode -- it would have nothing to do.
+    for key in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+        os.environ.pop(key, None)
+
+    settings = get_settings()
+    token = settings.hf_token or os.environ.get("HF_TOKEN")
+    targets = list(offline_mod.assets(settings))
+
+    failures = 0
+    for asset in targets:
+        if asset.gated and not include_gated:
+            console.print(f"[dim]skip[/] {asset.repo_id} (gated)")
+            continue
+        if not force and offline_mod.is_cached(asset.repo_id):
+            console.print(f"[green]cached[/] {asset.repo_id}")
+            continue
+        if asset.gated and not token:
+            console.print(
+                f"[red]skip[/] {asset.repo_id} — gated repo and HF_TOKEN is not set. "
+                "Accept its terms on the model page, then set HF_TOKEN in .env."
+            )
+            failures += 1
+            continue
+
+        console.print(f"[cyan]fetching[/] {asset.repo_id} ({asset.size_hint}) — {asset.purpose}")
+        try:
+            snapshot_download(asset.repo_id, token=token if asset.gated else None)
+        except Exception as exc:
+            from .common.errors import hint_for
+
+            console.print(f"[red]failed[/] {asset.repo_id}: {exc}")
+            hint = hint_for(exc)
+            if hint:
+                console.print(f"[yellow]{hint}[/]")
+            failures += 1
+            continue
+        console.print(f"[green]done[/] {asset.repo_id}")
+
+    if offline_mod.needs_external_audio_tokenizer():
+        repo = offline_mod.AUDIO_TOKENIZER_REPO
+        console.print(f"[cyan]fetching[/] {repo} (OmniVoice tokenizer is not bundled)")
+        try:
+            snapshot_download(repo)
+        except Exception as exc:
+            console.print(f"[red]failed[/] {repo}: {exc}")
+            failures += 1
+
+    # Piper keeps its voices outside the HF cache.
+    from .engines import piper_tts
+
+    if piper_tts.is_cached():
+        console.print(f"[green]cached[/] piper/{piper_tts.DEFAULT_VOICE_MODEL}")
+    else:
+        console.print(f"[cyan]fetching[/] piper/{piper_tts.DEFAULT_VOICE_MODEL} (~60 MB)")
+        try:
+            from piper.download_voices import download_voice
+
+            target = piper_tts.voices_dir()
+            target.mkdir(parents=True, exist_ok=True)
+            download_voice(piper_tts.DEFAULT_VOICE_MODEL, target)
+            console.print(f"[green]done[/] piper/{piper_tts.DEFAULT_VOICE_MODEL}")
+        except Exception as exc:
+            # Piper is only a fallback engine, so this is not fatal.
+            console.print(f"[yellow]skip[/] piper voice: {exc}")
+
+    console.print(f"\ncache: [dim]{offline_mod.cache_dir()}[/]")
+    if failures:
+        console.print(f"[red]{failures} model(s) unavailable[/] — offline mode will be degraded.")
+        raise typer.Exit(1)
+    console.print("[green]All models cached.[/] Set VOICEGW_OFFLINE=1 to run without a network.")
+
+
+def _run(coro) -> None:
+    """Run a local command, reporting model-load failures as advice.
+
+    These commands skip warmup, so a bad environment surfaces as a raw
+    exception from deep inside transformers. Translate it.
+    """
+    from .common.errors import EngineUnavailable, hint_for
+
+    try:
+        asyncio.run(coro)
+    except EngineUnavailable as exc:
+        console.print(f"[red]{exc.reason}[/]")
+        if exc.hint:
+            console.print(f"[yellow]{exc.hint}[/]")
+        raise typer.Exit(1) from exc
+    except Exception as exc:
+        console.print(f"[red]{type(exc).__name__}: {exc}[/]")
+        hint = hint_for(exc)
+        if hint:
+            console.print(f"[yellow]{hint}[/]")
+        console.print("[dim]Run `voicegw doctor` to check your environment.[/]")
+        raise typer.Exit(1) from exc
+
+
+@app.command()
+def doctor(profile: Profile | None = None) -> None:
+    """Check the environment: profile resolution, deps, token, voices."""
+    import os
+
+    _setup_logging(False)
+    if profile is not None:
+        os.environ["VOICEGW_PROFILE"] = profile.value
+        get_settings.cache_clear()
+
+    settings = get_settings()
+    table = Table(title="voicegw doctor", show_lines=False)
+    table.add_column("check")
+    table.add_column("result")
+
+    try:
+        res = resolve_profile(settings)
+        table.add_row("profile", f"[green]{res.profile.value}[/] ({res.reason})")
+        table.add_row("device", res.device)
+    except RuntimeError as exc:
+        table.add_row("profile", f"[red]{exc}[/]")
+        res = None
+
+    for mod in ("torch", "transformers", "omnivoice", "faster_whisper", "silero_vad", "piper"):
+        try:
+            __import__(mod)
+            table.add_row(mod, "[green]installed[/]")
+        except ImportError:
+            table.add_row(mod, "[yellow]missing[/]")
+        except Exception as exc:
+            # e.g. an ABI mismatch between torch and torchaudio.
+            table.add_row(mod, f"[red]broken: {type(exc).__name__}: {exc}[/]")
+
+    token = settings.hf_token or os.environ.get("HF_TOKEN")
+    table.add_row(
+        "HF_TOKEN",
+        "[green]set[/]"
+        if token
+        else "[red]missing[/] — the Cohere ASR repo is gated; accept its terms and set a token",
+    )
+
+    voices_dir = Path(settings.voices_dir)
+    table.add_row(
+        "voices",
+        f"[green]{voices_dir}/manifest.json[/]"
+        if (voices_dir / "manifest.json").exists()
+        else "[yellow]no manifest — built-in design voice only[/]",
+    )
+
+    if res is not None:
+        from .engines import registry
+
+        stt = settings.asr_engine or registry.PROFILE_DEFAULTS[res.profile]["stt"]
+        tts = settings.tts_engine or registry.PROFILE_DEFAULTS[res.profile]["tts"]
+        table.add_row("stt engine", stt)
+        table.add_row("tts engine", tts)
+
+    from .common import offline as offline_mod
+
+    table.add_row(
+        "offline mode",
+        "[green]on[/] — models load from the local cache only"
+        if settings.offline
+        else "[dim]off[/] — missing weights will be downloaded",
+    )
+    table.add_row("model cache", str(offline_mod.cache_dir()))
+    for asset in offline_mod.assets(settings):
+        if offline_mod.is_cached(asset.repo_id):
+            state = "[green]cached[/]"
+        elif settings.offline:
+            state = f"[red]NOT cached[/] — run `voicegw fetch` online ({asset.size_hint})"
+        else:
+            state = f"[yellow]not cached[/] — will download on first use ({asset.size_hint})"
+        table.add_row(f"  {asset.key}", state)
+
+    console.print(table)
+
+
+@app.command()
+def transcribe(
+    path: Path = typer.Argument(..., exists=True, readable=True),
+    language: str = "ar",
+    profile: Profile | None = None,
+    verbose: bool = False,
+) -> None:
+    """Transcribe an audio file locally (no server)."""
+    import os
+
+    _setup_logging(verbose)
+    if profile is not None:
+        os.environ["VOICEGW_PROFILE"] = profile.value
+        get_settings.cache_clear()
+
+    from .core import VoiceCore
+
+    async def run() -> None:
+        core = VoiceCore()
+        await core.startup(warmup=False)
+        result = await core.transcribe_bytes(path.read_bytes(), language)
+        console.print(f"[dim]{result.engine} · {result.duration_s:.1f}s[/]")
+        console.print(result.text or "[yellow](no speech detected)[/]")
+        await core.shutdown()
+
+    _run(run())
+
+
+@app.command()
+def say(
+    text: str,
+    out: Path = Path("out.wav"),
+    voice: str = "default",
+    profile: Profile | None = None,
+    verbose: bool = False,
+) -> None:
+    """Synthesize text to a WAV file locally (no server)."""
+    import os
+
+    _setup_logging(verbose)
+    if profile is not None:
+        os.environ["VOICEGW_PROFILE"] = profile.value
+        get_settings.cache_clear()
+
+    import numpy as np
+
+    from .common.audio import encode_wav
+    from .core import VoiceCore
+
+    async def run() -> None:
+        core = VoiceCore()
+        await core.startup(warmup=False)
+        chunks = [c async for c in core.synthesize(text, voice)]
+        if not chunks:
+            console.print("[red]no audio produced[/]")
+            return
+        samples = np.concatenate([c.samples for c in chunks])
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(encode_wav(samples, chunks[0].sample_rate))
+        console.print(f"[green]wrote[/] {out} ({len(samples) / chunks[0].sample_rate:.1f}s)")
+        await core.shutdown()
+
+    _run(run())
+
+
+if __name__ == "__main__":
+    app()
