@@ -224,6 +224,10 @@ time, so the manifest is validated at load.
 
 ## Notes
 
+- **There is no authentication.** The gateway binds to `127.0.0.1` by default
+  and is meant to stay there; `serve` warns if you bind it anywhere else.
+  Anyone who can reach the port can use your GPU. Put a reverse proxy in front
+  of it before exposing it.
 - A VAD/noise gate always runs before the ASR model — its card warns it
   hallucinates text from silence, and it does: with the gate off, digital
   silence transcribes as `"@@@فراغ"`.
@@ -233,7 +237,7 @@ time, so the manifest is validated at load.
 ## Development
 
 ```powershell
-python -m pytest -q                        # 178 tests, no GPU or network needed
+python -m pytest -q                        # 191 tests, no GPU or network needed
 python -m ruff check src tests scripts
 python -m ruff format src tests scripts
 ```

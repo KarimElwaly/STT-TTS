@@ -8,7 +8,9 @@ instead of OOM-ing a laptop GPU.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import threading
 import time
 from collections.abc import AsyncIterator
 from dataclasses import asdict
@@ -32,6 +34,12 @@ from .engines.vad import VadConfig, build_vad, gate_audio
 from .engines.voices import VoiceRegistry
 
 log = logging.getLogger(__name__)
+
+#: How many synthesized chunks may sit ahead of the consumer. Backpressure
+#: keeps a fast engine from buffering a whole reply into RAM for a slow client.
+_TTS_BUFFER_CHUNKS = 8
+#: How often a blocked producer wakes to check whether it should give up.
+_STOP_POLL_S = 0.1
 
 
 class VoiceCore:
@@ -274,7 +282,16 @@ class VoiceCore:
         engine = self._engine_for(voice)
 
         async with self._tts_lock:
-            queue: asyncio.Queue = asyncio.Queue(maxsize=8)
+            # Unbounded queue plus a semaphore for backpressure, rather than a
+            # bounded queue. A consumer can walk away mid-reply -- barge-in is
+            # a *feature*, and clients disconnect -- and `task.cancel()` does
+            # not stop a thread. With a bounded queue the producer blocks on
+            # `put` forever once the buffer fills, stranding an executor thread
+            # and the engine with it. A timed semaphore acquire means the
+            # producer always wakes up to notice it should stop.
+            queue: asyncio.Queue = asyncio.Queue()
+            slots = threading.Semaphore(_TTS_BUFFER_CHUNKS)
+            stop = threading.Event()
             loop = asyncio.get_running_loop()
             sentinel = object()
 
@@ -282,11 +299,16 @@ class VoiceCore:
                 try:
                     self._claim_gpu(engine)
                     for chunk in engine.synthesize(text, voice, urgent=urgent):
-                        asyncio.run_coroutine_threadsafe(queue.put(chunk), loop).result()
+                        while not slots.acquire(timeout=_STOP_POLL_S):
+                            if stop.is_set():
+                                return
+                        if stop.is_set():
+                            return
+                        loop.call_soon_threadsafe(queue.put_nowait, chunk)
                 except Exception as exc:  # surfaced to the consumer below
-                    asyncio.run_coroutine_threadsafe(queue.put(exc), loop).result()
+                    loop.call_soon_threadsafe(queue.put_nowait, exc)
                 finally:
-                    asyncio.run_coroutine_threadsafe(queue.put(sentinel), loop).result()
+                    loop.call_soon_threadsafe(queue.put_nowait, sentinel)
 
             task = asyncio.create_task(asyncio.to_thread(produce))
             try:
@@ -294,11 +316,19 @@ class VoiceCore:
                     item = await queue.get()
                     if item is sentinel:
                         break
+                    slots.release()
                     if isinstance(item, Exception):
                         raise item
                     yield item
             finally:
-                task.cancel()
+                stop.set()
+                slots.release()  # unblock a producer already waiting for room
+                # Wait for the thread so the engine is not handed to the next
+                # request while this one is still inside `generate`. Cancellation
+                # can cut this short, but `stop` bounds the thread's remaining
+                # life to one chunk either way.
+                with contextlib.suppress(BaseException):
+                    await task
 
     # -- introspection -----------------------------------------------------
     def health(self) -> dict:

@@ -23,6 +23,15 @@ def _free(monkeypatch, mib: int):
     )
 
 
+@pytest.fixture(autouse=True)
+def _bnb_installed(monkeypatch):
+    """Pin bitsandbytes as present so results don't depend on the test machine.
+
+    Tests that care about its absence override this explicitly.
+    """
+    monkeypatch.setattr(cohere_asr, "bitsandbytes_available", lambda: True)
+
+
 # --- mode selection --------------------------------------------------------
 
 
@@ -44,6 +53,7 @@ def test_auto_keeps_full_precision_when_there_is_room(monkeypatch):
 
 
 def test_auto_quantizes_when_the_probe_fails(monkeypatch):
+    """An unreadable card is assumed tight rather than roomy."""
     import torch
 
     def boom():
@@ -51,6 +61,50 @@ def test_auto_quantizes_when_the_probe_fails(monkeypatch):
 
     monkeypatch.setattr(torch.cuda, "mem_get_info", boom, raising=False)
     assert cohere_asr.resolve_quantization(Settings()) is Quantization.NF4
+
+
+# --- bitsandbytes availability ---------------------------------------------
+#
+# `transformers` exposes BitsAndBytesConfig even without bitsandbytes
+# installed, so nothing fails until the weights actually load. Picking a mode
+# that cannot work would kill ASR outright on a machine where full precision
+# would have worked -- slower, but alive.
+
+
+def test_auto_falls_back_to_full_precision_without_bitsandbytes(monkeypatch, caplog):
+    _free(monkeypatch, 5080)  # too small for both models at full precision
+    monkeypatch.setattr(cohere_asr, "bitsandbytes_available", lambda: False)
+    with caplog.at_level("WARNING"):
+        assert cohere_asr.resolve_quantization(Settings()) is Quantization.NONE
+    assert "bitsandbytes is not installed" in caplog.text
+
+
+def test_explicit_mode_is_not_silently_downgraded(monkeypatch):
+    """An explicit setting must fail loudly at load, not be ignored."""
+    _free(monkeypatch, 5080)
+    monkeypatch.setattr(cohere_asr, "bitsandbytes_available", lambda: False)
+    settings = Settings(asr_quantization=Quantization.NF4)
+    assert cohere_asr.resolve_quantization(settings) is Quantization.NF4
+
+
+def test_missing_bitsandbytes_has_its_own_hint():
+    from voicegw.common.errors import hint_for
+
+    exc = ImportError(
+        "Using `bitsandbytes` 4-bit quantization requires the latest version "
+        "of bitsandbytes: `pip install -U bitsandbytes`"
+    )
+    hint = hint_for(exc)
+    assert "pip install bitsandbytes" in hint
+    # The second escape hatch matters: installing is not the only fix.
+    assert "VOICEGW_ASR_QUANTIZATION=none" in hint
+
+
+def test_peer_footprint_is_not_a_duplicated_literal():
+    """The TTS footprint must be read from the TTS module, not copied."""
+    from voicegw.engines import omnivoice_tts
+
+    assert cohere_asr._tts_vram_mib() == omnivoice_tts.VRAM_MIB
 
 
 # --- what the mode implies -------------------------------------------------

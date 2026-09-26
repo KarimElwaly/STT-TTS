@@ -81,10 +81,25 @@ That single line is what guarantees a model is never swapped out from under an
 in-flight inference. STT and TTS alternate within a turn anyway, so serializing
 them costs nothing that the GPU wasn't already forcing.
 
-Streaming synthesis bridges the thread boundary with a bounded
-`asyncio.Queue(maxsize=8)`. Bounded matters: an unbounded queue lets a fast
-producer buffer an entire reply's audio into RAM while a slow client dribbles
-it out.
+Streaming synthesis bridges the thread boundary with an unbounded
+`asyncio.Queue` plus a `threading.Semaphore` for backpressure — deliberately
+*not* a bounded queue.
+
+The reason is cancellation. A consumer walking away mid-reply is normal
+traffic: barge-in is a feature, and HTTP clients disconnect. But
+`task.cancel()` does not stop a thread. With a bounded queue the producer
+blocks forever inside `put` once the buffer fills, stranding an executor thread
+*and* the engine it holds — and since the default executor has a fixed worker
+count, enough barge-ins wedge the whole gateway, STT included.
+
+So the producer checks a `threading.Event` between chunks and acquires its
+buffer slot with a timeout, which guarantees it wakes up to notice it should
+stop. The consumer sets that event in a `finally` and waits for the thread, so
+the engine is never handed to the next request while the previous one is still
+inside `generate`.
+
+Regression-tested in `tests/test_cancellation.py`, including that repeated
+abandonment does not exhaust the executor.
 
 ## GPU residency
 
@@ -185,6 +200,28 @@ latency there. Engines that don't care ignore the flag.
 
 `supports(voice)` drives fallback routing: Piper can't clone, so a clone voice
 is routed to an OmniVoice alternate automatically.
+
+## Trust boundary
+
+There is **no authentication anywhere in the gateway**. That is a deliberate
+fit for the intended deployment — a personal, localhost-only service — and the
+defaults enforce it: `host` is `127.0.0.1` and CORS allows only the Vite dev
+origin.
+
+It does mean the security posture rests entirely on the bind address, so
+`voicegw serve` warns when asked to bind anything other than loopback. Anyone
+who can reach the port gets unmetered use of the GPU and whatever `/healthz`
+reveals about the machine. Exposing it beyond the machine needs a reverse proxy
+that handles auth.
+
+Bounds that exist regardless: uploads cap at 64 MiB, synthesis input caps at
+`MAX_SYNTHESIS_CHARS` on *every* façade (the WebSocket `text` frame included,
+or it becomes the cheap way around the REST limit), and realtime history is
+trimmed to the last `MAX_HISTORY_TURNS` exchanges.
+
+The MCP server writes only into its own output directory and strips any path
+components from a model-supplied filename, so a tool call cannot choose an
+arbitrary write location.
 
 ## Configuration
 

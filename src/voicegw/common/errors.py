@@ -23,6 +23,13 @@ class EngineUnavailable(RuntimeError):
 
 #: Matched against the load failure to attach a remediation hint.
 _HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
+    # Checked before the generic missing-dependency hint: quantization has a
+    # second fix (turn it off) that the generic advice would not mention.
+    (
+        ("bitsandbytes",),
+        "Quantized ASR weights need bitsandbytes: `pip install bitsandbytes`. "
+        "Or set VOICEGW_ASR_QUANTIZATION=none to load at full precision.",
+    ),
     (
         ("gated repo", "401 client error", "access to model", "must have access"),
         "Accept the model terms on its Hugging Face page, then set HF_TOKEN in .env.",

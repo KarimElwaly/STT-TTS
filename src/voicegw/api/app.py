@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from ..common.audio import CONTENT_TYPES, encode_wav, float32_to_pcm16, wav_header
 from ..common.errors import EngineUnavailable
+from ..common.protocols import MAX_SYNTHESIS_CHARS
 from ..core import VoiceCore, get_core
 from ..realtime.session import RealtimeSession
 
@@ -144,7 +145,7 @@ async def transcriptions(
 # TTS -- OpenAI-compatible
 # ---------------------------------------------------------------------------
 class SpeechRequest(BaseModel):
-    input: str = Field(..., min_length=1, max_length=8000)
+    input: str = Field(..., min_length=1, max_length=MAX_SYNTHESIS_CHARS)
     model: str | None = None
     voice: str | None = None
     response_format: str = "wav"

@@ -29,6 +29,7 @@ import time
 from fastapi import WebSocket, WebSocketDisconnect
 
 from ..common.audio import float32_to_pcm16, pcm16_to_float32
+from ..common.protocols import MAX_SYNTHESIS_CHARS
 from ..common.text_chunker import StreamingChunker
 from ..core import VoiceCore
 from ..engines.vad import UtteranceDetector
@@ -168,8 +169,19 @@ class RealtimeSession:
                 self.language = msg["language"]
             await self.send(type="config.updated", voice=self.voice, language=self.language)
         elif kind == "text":
+            text = msg.get("text", "")
+            # The REST façade bounds this through its request model; the socket
+            # has to check for itself or it becomes the cheaper way to ask for
+            # unbounded synthesis.
+            if len(text) > MAX_SYNTHESIS_CHARS:
+                await self.send(
+                    type="error",
+                    code="text_too_long",
+                    message=f"text exceeds {MAX_SYNTHESIS_CHARS} characters",
+                )
+                return
             await self._cancel_response("new_turn")
-            self._response = asyncio.create_task(self._respond(msg.get("text", "")))
+            self._response = asyncio.create_task(self._respond(text))
         else:
             await self.send(type="error", code="unknown_type", message=f"unknown type {kind!r}")
 

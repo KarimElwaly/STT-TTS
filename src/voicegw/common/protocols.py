@@ -17,6 +17,11 @@ import numpy as np
 SAMPLE_RATE_IN = 16_000
 SAMPLE_RATE_OUT = 24_000
 
+#: Longest text accepted for synthesis, on every façade. Synthesis is the most
+#: expensive thing an unauthenticated local caller can ask for, so the bound is
+#: shared rather than restated per entry point.
+MAX_SYNTHESIS_CHARS = 8000
+
 
 @dataclass(slots=True)
 class Transcript:

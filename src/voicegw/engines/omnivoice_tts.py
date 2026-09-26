@@ -22,6 +22,10 @@ log = logging.getLogger(__name__)
 
 MODEL_ID = "k2-fsa/OmniVoice"
 
+#: Measured loaded-weight footprint in MiB (RTX 4050 Laptop, fp16,
+#: `python scripts/vram_budget.py`).
+VRAM_MIB = 1937
+
 
 #: Diffusion steps. The library default is 32, which costs ~1.4 s for a 4 s
 #: utterance -- far too slow for conversation. 16 roughly halves that at a
@@ -105,8 +109,7 @@ class OmniVoiceTts:
             rtf_estimate=rtf_estimate,
             realtime_capable=realtime_capable,
             notes=notes,
-            # Measured by scripts/vram_budget.py on an RTX 4050 Laptop.
-            vram_mib=1937 if device != "cpu" else 0,
+            vram_mib=VRAM_MIB if device != "cpu" else 0,
         )
 
     def load(self) -> None:

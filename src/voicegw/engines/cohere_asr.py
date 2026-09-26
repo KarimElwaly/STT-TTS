@@ -11,6 +11,7 @@ through :mod:`voicegw.engines.vad` first.
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 import os
 import time
@@ -43,6 +44,28 @@ RTF_ESTIMATE = {
 }
 
 
+def _tts_vram_mib() -> int:
+    """Footprint of the GPU TTS engine we expect to share the card with.
+
+    Imported lazily and by name rather than copied as a literal, so the two
+    numbers cannot drift apart. The pairing is an assumption: pinning a
+    VRAM-free TTS engine (piper) makes this conservative, never unsafe.
+    """
+    from .omnivoice_tts import VRAM_MIB as OMNIVOICE_VRAM_MIB
+
+    return OMNIVOICE_VRAM_MIB
+
+
+def bitsandbytes_available() -> bool:
+    """Whether quantized loading can actually work on this machine.
+
+    ``transformers`` exposes ``BitsAndBytesConfig`` even when bitsandbytes is
+    not installed -- it is only a dataclass -- so the config importing cleanly
+    says nothing about whether the weights will load.
+    """
+    return importlib.util.find_spec("bitsandbytes") is not None
+
+
 def resolve_quantization(settings=None) -> Quantization:
     """Pick a weight precision, shrinking the model only when it has to.
 
@@ -53,6 +76,8 @@ def resolve_quantization(settings=None) -> Quantization:
     """
     settings = settings or get_settings()
     if settings.asr_quantization is not Quantization.AUTO:
+        # An explicit choice is honoured even if it cannot work, so the failure
+        # names the real problem instead of silently ignoring the setting.
         return settings.asr_quantization
 
     try:
@@ -60,11 +85,28 @@ def resolve_quantization(settings=None) -> Quantization:
 
         free_mib = torch.cuda.mem_get_info()[0] // (1024 * 1024)
     except Exception:  # pragma: no cover - driver quirks
-        return Quantization.NF4
+        free_mib = 0  # unknown: assume the card is tight
 
-    # OmniVoice needs ~1937 MiB; see scripts/vram_budget.py.
-    both_fit = VRAM_MIB[Quantization.NONE] + 1937 + settings.vram_headroom_mib <= free_mib
-    return Quantization.NONE if both_fit else Quantization.NF4
+    both_fit = (
+        VRAM_MIB[Quantization.NONE] + _tts_vram_mib() + settings.vram_headroom_mib <= free_mib
+    )
+    if both_fit:
+        return Quantization.NONE
+
+    if not bitsandbytes_available():
+        # Quantizing would be better, but a working engine that swaps beats a
+        # dead one. Residency resolution will notice the larger footprint and
+        # fall back to exclusive mode on its own.
+        log.warning(
+            "Both models will not fit in %d MiB of free VRAM, but bitsandbytes is not "
+            "installed so the ASR weights cannot be quantized. Falling back to full "
+            "precision with GPU swapping (~3.3 s per turn). Install bitsandbytes to "
+            "avoid this.",
+            free_mib,
+        )
+        return Quantization.NONE
+
+    return Quantization.NF4
 
 
 class CohereAsr:

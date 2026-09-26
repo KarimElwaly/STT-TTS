@@ -48,9 +48,20 @@ def serve(
         get_settings.cache_clear()
 
     settings = get_settings()
+    bind = host or settings.host
+    if bind not in {"127.0.0.1", "localhost", "::1"}:
+        # There is no authentication anywhere in the gateway: binding it to a
+        # routable address hands anyone on the network unmetered use of the
+        # GPU, plus whatever /healthz reveals about the machine.
+        console.print(
+            f"[yellow]WARNING[/] binding to {bind}, not loopback. The gateway has no "
+            "authentication — anyone who can reach this port can run transcription "
+            "and synthesis on your hardware. Put it behind a reverse proxy that "
+            "handles auth, or bind to 127.0.0.1."
+        )
     uvicorn.run(
         "voicegw.api.app:app",
-        host=host or settings.host,
+        host=bind,
         port=port or settings.port,
         reload=reload,
         log_level="debug" if verbose else "info",
@@ -204,7 +215,15 @@ def doctor(profile: Profile | None = None) -> None:
         table.add_row("profile", f"[red]{exc}[/]")
         res = None
 
-    for mod in ("torch", "transformers", "omnivoice", "faster_whisper", "silero_vad", "piper"):
+    for mod in (
+        "torch",
+        "transformers",
+        "omnivoice",
+        "faster_whisper",
+        "silero_vad",
+        "piper",
+        "bitsandbytes",
+    ):
         try:
             __import__(mod)
             table.add_row(mod, "[green]installed[/]")
@@ -237,6 +256,15 @@ def doctor(profile: Profile | None = None) -> None:
         tts = settings.tts_engine or registry.PROFILE_DEFAULTS[res.profile]["tts"]
         table.add_row("stt engine", stt)
         table.add_row("tts engine", tts)
+
+        if stt == "cohere-asr" and res.profile is Profile.GPU:
+            from .engines.cohere_asr import VRAM_MIB, resolve_quantization
+
+            quant = resolve_quantization(settings)
+            note = f"{quant.value} (~{VRAM_MIB[quant]} MiB)"
+            if settings.asr_quantization.value == "auto":
+                note += " — auto"
+            table.add_row("asr quantization", note)
 
     from .common import offline as offline_mod
 

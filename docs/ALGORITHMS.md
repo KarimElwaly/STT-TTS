@@ -103,7 +103,13 @@ BitsAndBytesConfig(
 ```
 
 `auto` quantizes **only when it has to** — full precision is both faster and
-more faithful, so on a card with room it picks `none`.
+more faithful, so on a card with room it picks `none`. It also checks that
+bitsandbytes is actually installed: `transformers` exposes `BitsAndBytesConfig`
+even when it is not, so the config importing cleanly says nothing about whether
+the weights will load. Without it, `auto` falls back to full precision and
+accepts the swap cost — a slower gateway beats a dead one. An *explicit*
+`VOICEGW_ASR_QUANTIZATION=nf4` is still honoured and fails loudly, matching how
+`VOICEGW_PROFILE=gpu` behaves on a machine with no usable CUDA.
 
 ### Two sharp edges
 
@@ -285,4 +291,5 @@ python scripts/turn_latency.py         # end-to-end (gateway must be running)
 python scripts/ab_first_chunk.py       # quality A/B, needs your ears
 python scripts/tune_tts.py             # sweep steady-state num_step
 python scripts/bench.py                # per-engine RTF
+python scripts/check_cancel.py         # barge-in does not strand the engine
 ```

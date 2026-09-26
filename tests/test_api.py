@@ -308,6 +308,28 @@ def test_realtime_rejects_malformed_control_frame(client):
         assert ws.receive_json()["code"] == "bad_json"
 
 
+def test_realtime_bounds_text_length_like_the_rest_facade(client):
+    """Otherwise the socket is the cheap way to ask for unbounded synthesis."""
+    from voicegw.common.protocols import MAX_SYNTHESIS_CHARS
+
+    with client.websocket_connect("/v1/realtime") as ws:
+        ws.receive_json()
+        ws.send_json({"type": "text", "text": "ا" * (MAX_SYNTHESIS_CHARS + 1)})
+        event = ws.receive_json()
+        assert event["type"] == "error"
+        assert event["code"] == "text_too_long"
+
+
+def test_realtime_accepts_text_at_the_limit(client):
+    from voicegw.common.protocols import MAX_SYNTHESIS_CHARS
+
+    with client.websocket_connect("/v1/realtime") as ws:
+        ws.receive_json()
+        ws.send_json({"type": "text", "text": "ا" * MAX_SYNTHESIS_CHARS})
+        # Anything but the rejection means it was accepted for synthesis.
+        assert ws.receive_json()["type"] != "error"
+
+
 # --- TTS routing -----------------------------------------------------------
 
 
