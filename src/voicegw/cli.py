@@ -10,7 +10,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from .common.config import Profile, get_settings, resolve_profile
+from .common.config import Profile, Settings, get_settings, resolve_profile
 
 app = typer.Typer(help="Arabic voice gateway: STT + TTS over REST, WebSocket and MCP.")
 console = Console()
@@ -207,6 +207,53 @@ def doctor(profile: Profile | None = None) -> None:
     table.add_column("check")
     table.add_column("result")
 
+    # The table is printed from a `finally` below. Importing torch and
+    # transformers takes several seconds cold, and whatever goes wrong in
+    # there must not swallow the rows already gathered -- a diagnostic that
+    # reports nothing when the environment is broken is worse than useless.
+    try:
+        _doctor_checks(settings, table)
+    finally:
+        console.print(table)
+
+
+#: Third-party packages `doctor` reports on, in import order.
+_DEPENDENCIES = (
+    "torch",
+    "transformers",
+    "omnivoice",
+    "faster_whisper",
+    "silero_vad",
+    "piper",
+    "bitsandbytes",
+)
+
+
+def _probe_dependencies(table: Table) -> None:
+    """Import each dependency and record what happened.
+
+    Importing arbitrary third-party code is hostile territory: a package can
+    call ``sys.exit()`` when it dislikes the environment, which raises
+    ``SystemExit`` -- a ``BaseException``, so a plain ``except Exception``
+    would let it terminate the process. Naming the culprit is the whole point
+    of this command, so nothing here may kill it silently.
+    """
+    for mod in _DEPENDENCIES:
+        try:
+            __import__(mod)
+            table.add_row(mod, "[green]installed[/]")
+        except ImportError:
+            table.add_row(mod, "[yellow]missing[/]")
+        except KeyboardInterrupt:
+            table.add_row(mod, "[yellow]interrupted[/]")
+            raise  # the user asked to stop; the table still prints
+        except BaseException as exc:
+            table.add_row(mod, f"[red]broken: {type(exc).__name__}: {exc}[/]")
+
+
+def _doctor_checks(settings: Settings, table: Table) -> None:
+    import os
+
     try:
         res = resolve_profile(settings)
         table.add_row("profile", f"[green]{res.profile.value}[/] ({res.reason})")
@@ -215,23 +262,8 @@ def doctor(profile: Profile | None = None) -> None:
         table.add_row("profile", f"[red]{exc}[/]")
         res = None
 
-    for mod in (
-        "torch",
-        "transformers",
-        "omnivoice",
-        "faster_whisper",
-        "silero_vad",
-        "piper",
-        "bitsandbytes",
-    ):
-        try:
-            __import__(mod)
-            table.add_row(mod, "[green]installed[/]")
-        except ImportError:
-            table.add_row(mod, "[yellow]missing[/]")
-        except Exception as exc:
-            # e.g. an ABI mismatch between torch and torchaudio.
-            table.add_row(mod, f"[red]broken: {type(exc).__name__}: {exc}[/]")
+    console.print("[dim]importing dependencies (cold start takes a few seconds)...[/]")
+    _probe_dependencies(table)
 
     token = settings.hf_token or os.environ.get("HF_TOKEN")
     table.add_row(
@@ -283,8 +315,6 @@ def doctor(profile: Profile | None = None) -> None:
         else:
             state = f"[yellow]not cached[/] — will download on first use ({asset.size_hint})"
         table.add_row(f"  {asset.key}", state)
-
-    console.print(table)
 
 
 @app.command()

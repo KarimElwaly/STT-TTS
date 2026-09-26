@@ -237,7 +237,7 @@ time, so the manifest is validated at load.
 ## Development
 
 ```powershell
-python -m pytest -q                        # 191 tests, no GPU or network needed
+python -m pytest -q                        # 196 tests, no GPU or network needed
 python -m ruff check src tests scripts
 python -m ruff format src tests scripts
 ```
