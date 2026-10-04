@@ -29,6 +29,8 @@ class Transcript:
     language: str
     duration_s: float = 0.0
     engine: str = ""
+    words: list[dict] = field(default_factory=list)
+    segments: list[dict] = field(default_factory=list)
 
 
 @dataclass(slots=True)

@@ -55,6 +55,14 @@ def _piper(_res: ProfileResolution) -> Any:
     return piper_tts.build_cpu()
 
 
+def _omnivoice_gguf(res: ProfileResolution) -> Any:
+    from . import omnivoice_gguf
+
+    if res.profile is Profile.GPU:
+        return omnivoice_gguf.build_gpu(res.device)
+    return omnivoice_gguf.build_cpu()
+
+
 STT_ENGINES: dict[str, Callable[[ProfileResolution], Any]] = {
     "cohere-asr": _cohere_gpu,
     "cohere-asr-cpu": _cohere_cpu,
@@ -64,8 +72,10 @@ STT_ENGINES: dict[str, Callable[[ProfileResolution], Any]] = {
 TTS_ENGINES: dict[str, Callable[[ProfileResolution], Any]] = {
     "omnivoice": _omnivoice_gpu,
     "omnivoice-cpu": _omnivoice_cpu,
+    "omnivoice-gguf": _omnivoice_gguf,
     "piper": _piper,
 }
+
 
 #: Defaults per profile. The CPU STT default is faster-whisper rather than
 #: Cohere-on-CPU because the 2B model cannot hit the conversational latency

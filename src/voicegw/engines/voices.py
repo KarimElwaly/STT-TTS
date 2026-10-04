@@ -160,4 +160,71 @@ class VoiceRegistry:
             problems.append(f"reference is {seconds:.1f}s, want >= {MIN_REF_SECONDS}s")
         if seconds > MAX_REF_SECONDS:
             problems.append(f"reference is {seconds:.1f}s, want <= {MAX_REF_SECONDS}s")
+
+        import numpy as np
+
+        clipped = int(np.sum(np.abs(audio) >= 0.999))
+        if clipped > 10 and (clipped / len(audio)) > 0.001:
+            problems.append(
+                f"detected {clipped} clipped samples ({(clipped / len(audio)) * 100:.2f}%); "
+                "audio may sound distorted"
+            )
         return problems
+
+    def check_quality(self, voice: Voice):
+        """Perform comprehensive acoustic quality control on reference audio."""
+        if not voice.is_clone:
+            return None
+        from ..common.audio import load_audio_file
+        from ..common.audio_qc import analyze_audio_quality
+        from ..common.protocols import SAMPLE_RATE_IN
+
+        audio = load_audio_file(voice.ref_audio)
+        return analyze_audio_quality(audio, SAMPLE_RATE_IN, MIN_REF_SECONDS, MAX_REF_SECONDS)
+
+    def add_voice(
+        self,
+        voice_id: str,
+        label: str,
+        audio_bytes: bytes,
+        ref_text: str,
+        language: str = "ar",
+        tags: list[str] | None = None,
+    ) -> Voice:
+        """Register a new cloned voice, save its audio reference, and update manifest.json."""
+        import re
+
+        clean_id = re.sub(r"[^a-zA-Z0-9_\-]", "", voice_id).strip()
+        if not clean_id:
+            raise ValueError("Invalid voice id; must contain alphanumeric characters")
+        if not ref_text or not ref_text.strip():
+            raise ValueError("Reference transcript (ref_text) cannot be empty")
+
+        filename = f"{clean_id}.wav"
+        file_path = self.dir / filename
+        file_path.write_bytes(audio_bytes)
+
+        manifest_path = self.dir / MANIFEST_NAME
+        data = {"voices": []}
+        if manifest_path.exists():
+            try:
+                data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except Exception:
+                data = {"voices": []}
+
+        voices_list = [v for v in data.get("voices", []) if v.get("id") != clean_id]
+        new_entry = {
+            "id": clean_id,
+            "label": label or clean_id,
+            "language": language,
+            "ref_audio": filename,
+            "ref_text": ref_text.strip(),
+            "tags": tags or ["clone"],
+        }
+        voices_list.append(new_entry)
+        data["voices"] = voices_list
+        manifest_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+        voice = self._build(new_entry)
+        self._voices[clean_id] = voice
+        return voice

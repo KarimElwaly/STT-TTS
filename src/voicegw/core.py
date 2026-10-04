@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from pathlib import Path
 import threading
 import time
 from collections.abc import AsyncIterator
@@ -17,7 +18,7 @@ from dataclasses import asdict
 
 import numpy as np
 
-from .common.audio import decode_audio
+from .common.audio import decode_audio, trim_edge_silence
 from .common.config import (
     Profile,
     ProfileResolution,
@@ -28,6 +29,7 @@ from .common.config import (
     resolve_residency,
 )
 from .common.errors import EngineUnavailable, hint_for
+from .common.lexicon import LexiconManager
 from .common.protocols import SAMPLE_RATE_IN, AudioChunk, Transcript, Voice
 from .engines import registry
 from .engines.vad import VadConfig, build_vad, gate_audio
@@ -52,6 +54,7 @@ class VoiceCore:
         self.vad = None
         self.vad_config = VadConfig()
         self.voices: VoiceRegistry | None = None
+        self.lexicon: LexiconManager | None = None
         self._stt_lock = asyncio.Lock()
         self._tts_lock = asyncio.Lock()
         self.residency = Residency.SHARED
@@ -92,6 +95,7 @@ class VoiceCore:
         )
 
         self.voices = VoiceRegistry(self.settings.voices_dir)
+        self.lexicon = LexiconManager(Path(self.settings.voices_dir) / "lexicon.json")
         self.stt = registry.build_stt(self.resolution, self.settings)
         self.tts = registry.build_tts(self.resolution, self.settings)
         self._tts_alternates = registry.build_tts_alternates(
@@ -278,6 +282,8 @@ class VoiceCore:
     ) -> AsyncIterator[AudioChunk]:
         if self.tts_error is not None:
             raise self.tts_error
+        if self.lexicon is not None:
+            text = self.lexicon.apply(text)
         voice = self.resolve_voice(voice_id)
         engine = self._engine_for(voice)
 
@@ -299,12 +305,18 @@ class VoiceCore:
                 try:
                     self._claim_gpu(engine)
                     for chunk in engine.synthesize(text, voice, urgent=urgent):
+                        trimmed = trim_edge_silence(chunk.samples, chunk.sample_rate)
+                        out_chunk = AudioChunk(
+                            samples=trimmed,
+                            sample_rate=chunk.sample_rate,
+                            is_final=chunk.is_final,
+                        )
                         while not slots.acquire(timeout=_STOP_POLL_S):
                             if stop.is_set():
                                 return
                         if stop.is_set():
                             return
-                        loop.call_soon_threadsafe(queue.put_nowait, chunk)
+                        loop.call_soon_threadsafe(queue.put_nowait, out_chunk)
                 except Exception as exc:  # surfaced to the consumer below
                     loop.call_soon_threadsafe(queue.put_nowait, exc)
                 finally:

@@ -436,3 +436,58 @@ def test_unsupported_voice_without_alternate_raises(core):
     clone = Voice(id="c", label="c", ref_audio="x.wav", ref_text="t")
     with pytest.raises(ValueError, match="No loaded TTS engine"):
         core._engine_for(clone)
+
+
+def test_speech_flac_format(client):
+    resp = client.post(
+        "/v1/audio/speech",
+        json={"input": "مرحبا", "voice": "default", "response_format": "flac", "stream": False},
+    )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "audio/flac"
+    assert resp.content.startswith(b"fLaC")
+
+
+def test_speech_mp3_format(client):
+    resp = client.post(
+        "/v1/audio/speech",
+        json={"input": "مرحبا", "voice": "default", "response_format": "mp3", "stream": False},
+    )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "audio/mpeg"
+    assert len(resp.content) > 0
+
+
+def test_speech_opus_format(client):
+    resp = client.post(
+        "/v1/audio/speech",
+        json={"input": "مرحبا", "voice": "default", "response_format": "opus", "stream": False},
+    )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "audio/ogg"
+    assert len(resp.content) > 0
+
+
+def test_transcription_verbose_json_format(client, wav_bytes):
+    resp = client.post(
+        "/v1/audio/transcriptions",
+        data={"response_format": "verbose_json"},
+        files={"file": ("test.wav", wav_bytes, "audio/wav")},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["task"] == "transcribe"
+    assert "words" in data
+    assert "segments" in data
+    assert data["text"] == "مرحبا بك"
+
+
+def test_validation_error_returns_openai_envelope(client):
+    # Missing required 'input' field in speech request
+    resp = client.post("/v1/audio/speech", json={"voice": "default"})
+    assert resp.status_code == 400
+    err = resp.json()["error"]
+    assert err["type"] == "invalid_request_error"
+    assert "input" in err["message"]
+
+

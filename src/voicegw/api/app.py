@@ -13,18 +13,70 @@ from pathlib import Path
 
 import numpy as np
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, WebSocket
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from ..common.audio import CONTENT_TYPES, encode_wav, float32_to_pcm16, wav_header
+from ..common.audio import (
+    CONTENT_TYPES,
+    concat_with_crossfade,
+    decode_audio,
+    encode_aac,
+    encode_flac,
+    encode_mp3,
+    encode_opus,
+    encode_wav,
+    float32_to_pcm16,
+    wav_header,
+)
 from ..common.errors import EngineUnavailable
-from ..common.protocols import MAX_SYNTHESIS_CHARS
+from ..common.protocols import MAX_SYNTHESIS_CHARS, Transcript
 from ..core import VoiceCore, get_core
+from ..engines.prosody import describe_voice
 from ..realtime.session import RealtimeSession
 
 log = logging.getLogger(__name__)
+
+
+def _format_timestamp(seconds: float, decimal_sep: str) -> str:
+    hrs = int(seconds // 3600)
+    mins = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    millis = int(round((seconds - int(seconds)) * 1000))
+    return f"{hrs:02d}:{mins:02d}:{secs:02d}{decimal_sep}{millis:03d}"
+
+
+def format_srt(transcript: Transcript) -> str:
+    lines = []
+    for i, seg in enumerate(transcript.segments, 1):
+        s_start = seg.get("start", 0.0)
+        s_end = seg.get("end", 0.0)
+        start_ts = _format_timestamp(s_start, ",")
+        end_ts = _format_timestamp(s_end, ",")
+        text = seg.get("text", "").strip()
+        lines.append(f"{i}\n{start_ts} --> {end_ts}\n{text}\n")
+    if not lines and transcript.text:
+        end_ts = _format_timestamp(transcript.duration_s, ",")
+        lines.append(f"1\n00:00:00,000 --> {end_ts}\n{transcript.text}\n")
+    return "\n".join(lines).strip() + "\n"
+
+
+def format_vtt(transcript: Transcript) -> str:
+    lines = ["WEBVTT\n"]
+    for i, seg in enumerate(transcript.segments, 1):
+        s_start = seg.get("start", 0.0)
+        s_end = seg.get("end", 0.0)
+        start_ts = _format_timestamp(s_start, ".")
+        end_ts = _format_timestamp(s_end, ".")
+        text = seg.get("text", "").strip()
+        lines.append(f"{start_ts} --> {end_ts}\n{text}\n")
+    if len(lines) == 1 and transcript.text:
+        end_ts = _format_timestamp(transcript.duration_s, ".")
+        lines.append(f"00:00:00.000 --> {end_ts}\n{transcript.text}\n")
+    return "\n".join(lines).strip() + "\n"
+
 
 MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 
@@ -68,6 +120,26 @@ async def engine_unavailable_handler(_request, exc: EngineUnavailable) -> JSONRe
     )
 
 
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(_request, exc: RequestValidationError) -> JSONResponse:
+    """Translate FastAPI 422 validation errors into OpenAI HTTP 400 error envelopes."""
+    errors = exc.errors()
+    first = errors[0] if errors else {}
+    loc = ".".join(str(l) for l in first.get("loc", []))
+    msg = first.get("msg", "Invalid request parameter")
+    return JSONResponse(
+        {
+            "error": {
+                "message": f"{loc}: {msg}" if loc else msg,
+                "type": "invalid_request_error",
+                "param": loc or None,
+                "code": first.get("type", None),
+            }
+        },
+        status_code=400,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Health / introspection
 # ---------------------------------------------------------------------------
@@ -105,6 +177,63 @@ async def list_voices(core: VoiceCore = Depends(core_dep)) -> dict:
     }
 
 
+@app.post("/v1/voices")
+async def create_voice(
+    id: str = Form(...),
+    label: str = Form(...),
+    ref_text: str = Form(...),
+    file: UploadFile = File(...),
+    language: str = Form("ar"),
+    core: VoiceCore = Depends(core_dep),
+):
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "empty audio file")
+    audio = decode_audio(data, target_sr=16000)
+    wav_bytes = encode_wav(audio, 16000)
+    try:
+        voice = core.voices.add_voice(
+            voice_id=id,
+            label=label,
+            audio_bytes=wav_bytes,
+            ref_text=ref_text,
+            language=language,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    qc = core.voices.check_quality(voice)
+    return {
+        "id": voice.id,
+        "label": voice.label,
+        "language": voice.language,
+        "is_clone": voice.is_clone,
+        "quality": {
+            "is_valid": qc.is_valid if qc else True,
+            "duration_s": qc.duration_s if qc else 0.0,
+            "rms_dbfs": qc.rms_dbfs if qc else 0.0,
+            "clipped_samples": qc.clipped_samples if qc else 0,
+            "speech_duration_s": qc.speech_duration_s if qc else 0.0,
+            "warnings": qc.warnings if qc else [],
+        }
+        if qc
+        else None,
+    }
+
+
+@app.post("/v1/voices/describe")
+async def describe_audio(file: UploadFile = File(...)):
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "empty audio file")
+    audio = decode_audio(data, target_sr=16000)
+    description, metrics = describe_voice(audio, 16000)
+    return {
+        "description": description,
+        "metrics": metrics,
+    }
+
+
 # ---------------------------------------------------------------------------
 # STT -- OpenAI-compatible
 # ---------------------------------------------------------------------------
@@ -117,6 +246,10 @@ async def transcriptions(
     vad: bool = Form(True),
     core: VoiceCore = Depends(core_dep),
 ):
+    if response_format not in {"json", "text", "verbose_json", "srt", "vtt"}:
+        raise HTTPException(
+            400, "response_format must be 'json', 'text', 'verbose_json', 'srt', or 'vtt'"
+        )
     data = await file.read()
     if not data:
         raise HTTPException(400, "empty audio file")
@@ -133,6 +266,19 @@ async def transcriptions(
 
     if response_format == "text":
         return StreamingResponse(iter([transcript.text]), media_type="text/plain")
+    if response_format == "srt":
+        return StreamingResponse(iter([format_srt(transcript)]), media_type="text/plain")
+    if response_format == "vtt":
+        return StreamingResponse(iter([format_vtt(transcript)]), media_type="text/vtt")
+    if response_format == "verbose_json":
+        return {
+            "task": "transcribe",
+            "language": transcript.language,
+            "duration": transcript.duration_s,
+            "text": transcript.text,
+            "words": transcript.words,
+            "segments": transcript.segments,
+        }
     return {
         "text": transcript.text,
         "language": transcript.language,
@@ -154,8 +300,11 @@ class SpeechRequest(BaseModel):
 
 @app.post("/v1/audio/speech")
 async def speech(req: SpeechRequest, core: VoiceCore = Depends(core_dep)):
-    if req.response_format not in {"wav", "pcm"}:
-        raise HTTPException(400, "response_format must be 'wav' or 'pcm'")
+    valid_formats = {"wav", "pcm", "mp3", "flac", "opus", "aac"}
+    if req.response_format not in valid_formats:
+        raise HTTPException(
+            400, f"response_format must be one of: {', '.join(sorted(valid_formats))}"
+        )
     # Raise before the streaming response starts: once the 200 and the first
     # bytes are out, there is no way to report the failure to the client.
     if core.tts_error is not None:
@@ -173,12 +322,22 @@ async def speech(req: SpeechRequest, core: VoiceCore = Depends(core_dep)):
         if not chunks:
             raise HTTPException(500, "synthesis produced no audio")
         sr = chunks[0].sample_rate
-        samples = np.concatenate([c.samples for c in chunks])
+        fade_samples = int(sr * 0.035)
+        samples = concat_with_crossfade([c.samples for c in chunks], fade_samples)
         if req.response_format == "wav":
             body = encode_wav(samples, sr)
+        elif req.response_format == "flac":
+            body = encode_flac(samples, sr)
+        elif req.response_format == "mp3":
+            body = encode_mp3(samples, sr)
+        elif req.response_format == "opus":
+            body = encode_opus(samples, sr)
+        elif req.response_format == "aac":
+            body = encode_aac(samples, sr)
         else:
             body = float32_to_pcm16(samples)
         return StreamingResponse(iter([body]), media_type=CONTENT_TYPES[req.response_format])
+
 
     async def stream() -> AsyncIterator[bytes]:
         header_sent = False

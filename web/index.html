@@ -3,12 +3,32 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>voicegw</title>
+    <title>voicegw — Realtime Voice Gateway & Studio</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
     <header>
-      <h1>voicegw</h1>
+      <div class="brand">
+        <div class="logo-orb"></div>
+        <h1>voicegw</h1>
+        <span class="subbrand">Gateway & Voice Studio</span>
+      </div>
+
+      <nav class="nav-tabs" role="tablist">
+        <button id="tab-btn-conversation" class="tab-btn active" role="tab" aria-selected="true">
+          المحادثة المباشرة
+        </button>
+        <button id="tab-btn-studio" class="tab-btn" role="tab" aria-selected="false">
+          استوديو استنساخ الصوت
+        </button>
+      </nav>
+
       <div id="badges">
         <span class="badge" id="profile-badge">…</span>
         <span class="badge" id="engine-badge"></span>
@@ -17,41 +37,162 @@
     </header>
 
     <main>
-      <section id="controls">
-        <button id="connect">Connect</button>
-        <button id="talk" disabled>Hold to talk</button>
-        <label class="toggle">
-          <input type="checkbox" id="open-mic" />
-          Open mic (VAD)
-        </label>
-        <select id="voice" disabled></select>
-        <button id="stop" disabled>Stop audio</button>
-        <label class="toggle" title="Off: the gateway speaks your words back without an LLM">
-          <input type="checkbox" id="use-agent" checked />
-          Send to agent
-        </label>
+      <!-- Tab 1: Live Conversation -->
+      <section id="tab-conversation" class="tab-pane active">
+        <section id="controls">
+          <button id="connect" class="primary-btn">Connect</button>
+          <button id="talk" disabled>Hold to talk</button>
+          <label class="toggle">
+            <input type="checkbox" id="open-mic" />
+            Open mic (VAD)
+          </label>
+          <select id="voice" disabled aria-label="اختر الصوت"></select>
+          <button id="stop" disabled>Stop audio</button>
+          <label class="toggle" title="Off: the gateway speaks your words back without an LLM">
+            <input type="checkbox" id="use-agent" checked />
+            Send to agent
+          </label>
+        </section>
+
+        <section id="say-row">
+          <input
+            id="say-text"
+            type="text"
+            placeholder="اكتب نصًا لنطقه… (TTS only, skips the mic)"
+            disabled
+          />
+          <button id="say" disabled>Speak</button>
+        </section>
+
+        <section id="meters">
+          <div class="meter">
+            <span>Mic</span>
+            <progress id="level" max="1" value="0"></progress>
+          </div>
+          <div id="hud">
+            <span>ASR <b id="hud-asr">—</b></span>
+            <span>First audio <b id="hud-audio">—</b></span>
+            <span>Total <b id="hud-total">—</b></span>
+          </div>
+        </section>
+
+        <section id="transcript" aria-live="polite"></section>
       </section>
 
-      <section id="say-row">
-        <input
-          id="say-text"
-          type="text"
-          placeholder="اكتب نصًا لنطقه… (TTS only, skips the mic)"
-          disabled
-        />
-        <button id="say" disabled>Speak</button>
-      </section>
+      <!-- Tab 2: Voice Studio -->
+      <section id="tab-studio" class="tab-pane">
+        <div class="studio-grid">
+          <!-- Left Column: Recorder & Visualizer -->
+          <div class="studio-panel">
+            <h2>تسجيل العينة المرجعية (Reference Sample)</h2>
+            <p class="panel-desc">
+              سجّل عينة صوتية نقية لمدة 3 إلى 10 ثوانٍ باللغة العربية مع نطق سليم.
+            </p>
 
-      <section id="meters">
-        <div class="meter"><span>Mic</span><progress id="level" max="1" value="0"></progress></div>
-        <div id="hud">
-          <span>ASR <b id="hud-asr">—</b></span>
-          <span>First audio <b id="hud-audio">—</b></span>
-          <span>Total <b id="hud-total">—</b></span>
+            <div class="visualizer-box">
+              <canvas id="studio-visualizer" width="500" height="120"></canvas>
+              <div id="studio-rec-timer" class="rec-timer">00:00</div>
+            </div>
+
+            <div class="studio-actions">
+              <button id="studio-record-btn" class="record-btn">بدء التسجيل</button>
+              <button id="studio-stop-rec-btn" class="danger-btn" disabled>إيقاف التسجيل</button>
+              <button id="studio-play-rec-btn" disabled>استماع للعينة</button>
+            </div>
+
+            <div class="upload-alt">
+              <span>أو ارفع ملف صوتي (WAV / MP3):</span>
+              <input type="file" id="studio-file-upload" accept="audio/*" />
+            </div>
+
+            <!-- Analysis Reports Grid -->
+            <div id="studio-analysis-section" class="analysis-section" style="display: none;">
+              <h3>نتائج الفحص والتحليل الصوتي</h3>
+              <div class="analysis-cards">
+                <div class="analysis-card" id="qc-card">
+                  <div class="card-header">
+                    <h4>جودة الصوت (Audio QC)</h4>
+                    <span id="qc-badge" class="badge">جيد</span>
+                  </div>
+                  <ul class="metrics-list" id="qc-metrics-list"></ul>
+                </div>
+
+                <div class="analysis-card" id="prosody-card">
+                  <div class="card-header">
+                    <h4>التحليل النغمي (Prosody Mirror)</h4>
+                  </div>
+                  <div class="tags-container" id="prosody-tags"></div>
+                  <ul class="metrics-list" id="prosody-metrics-list"></ul>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right Column: Registration & Voices List -->
+          <div class="studio-panel">
+            <h2>إنشاء صوت مستنسخ جديد</h2>
+            <p class="panel-desc">
+              سيتم حفظ الصوت في الـ Voice Registry ويكون جاهزاً فوراً للاستخدام والمحادثة.
+            </p>
+
+            <form id="studio-voice-form" class="studio-form">
+              <div class="form-group">
+                <label for="new-voice-id">معرّف الصوت (ID)</label>
+                <input
+                  type="text"
+                  id="new-voice-id"
+                  placeholder="مثال: custom_narrator"
+                  pattern="[a-zA-Z0-9_\-]+"
+                  required
+                />
+              </div>
+
+              <div class="form-group">
+                <label for="new-voice-label">اسم الصوت المعروض</label>
+                <input
+                  type="text"
+                  id="new-voice-label"
+                  placeholder="مثال: الراوي مروان"
+                  required
+                />
+              </div>
+
+              <div class="form-group">
+                <label for="new-voice-ref-text">النص المطابق للتسجيل المرجعي (Ref Text)</label>
+                <textarea
+                  id="new-voice-ref-text"
+                  rows="3"
+                  placeholder="اكتب بدقة ما تم نطقه في التسجيل..."
+                  required
+                ></textarea>
+              </div>
+
+              <button type="submit" id="studio-save-btn" class="primary-btn" disabled>
+                حفظ وتسجيل الصوت
+              </button>
+            </form>
+
+            <div class="voice-tester-box">
+              <h3>اختبار النطق الفوري</h3>
+              <div class="test-row">
+                <input
+                  type="text"
+                  id="studio-test-text"
+                  placeholder="اكتب جملة لتجربة الصوت المستنسخ…"
+                  value="مرحبًا بك، هذا اختبار للنظام الصوتي الجديد."
+                />
+                <button id="studio-test-btn" disabled>نطق</button>
+              </div>
+              <audio id="studio-audio-player" controls style="display: none; width: 100%; margin-top: 0.75rem;"></audio>
+            </div>
+
+            <div class="registered-voices-box">
+              <h3>الأصوات المسجلة في البوابة</h3>
+              <div id="studio-voices-list" class="voices-chips"></div>
+            </div>
+          </div>
         </div>
       </section>
-
-      <section id="transcript"></section>
     </main>
 
     <script type="module" src="/src/main.ts"></script>

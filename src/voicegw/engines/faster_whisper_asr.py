@@ -138,16 +138,66 @@ class FasterWhisperAsr:
         if audio.size == 0:
             return Transcript("", language, 0.0, self.info.engine_id)
 
-        segments, _info = self._model.transcribe(
-            audio.astype(np.float32),
+        try:
+            segments_iter, _info = self._model.transcribe(
+                audio.astype(np.float32),
+                language=language,
+                beam_size=1,
+                condition_on_previous_text=False,
+                vad_filter=True,
+                word_timestamps=True,
+            )
+        except TypeError:
+            segments_iter, _info = self._model.transcribe(
+                audio.astype(np.float32),
+                language=language,
+                beam_size=1,
+                condition_on_previous_text=False,
+                vad_filter=True,
+            )
+
+        text_parts = []
+        words_list: list[dict] = []
+        segments_list: list[dict] = []
+
+        for s in segments_iter:
+            clean_text = s.text.strip() if hasattr(s, "text") else ""
+            if clean_text:
+                text_parts.append(clean_text)
+            seg_words = []
+            if getattr(s, "words", None):
+                for w in s.words:
+                    w_dict = {
+                        "word": getattr(w, "word", ""),
+                        "start": round(float(w.start), 2) if hasattr(w, "start") else 0.0,
+                        "end": round(float(w.end), 2) if hasattr(w, "end") else 0.0,
+                        "probability": round(float(getattr(w, "probability", 1.0)), 3),
+                    }
+                    seg_words.append(w_dict)
+                    words_list.append(w_dict)
+            segments_list.append({
+                "id": getattr(s, "id", len(segments_list)),
+                "seek": getattr(s, "seek", 0),
+                "start": round(float(s.start), 2) if hasattr(s, "start") else 0.0,
+                "end": round(float(s.end), 2) if hasattr(s, "end") else round(duration, 2),
+                "text": clean_text,
+                "tokens": getattr(s, "tokens", []),
+                "temperature": getattr(s, "temperature", 0.0),
+                "avg_logprob": round(float(getattr(s, "avg_logprob", 0.0)), 3),
+                "compression_ratio": round(float(getattr(s, "compression_ratio", 1.0)), 3),
+                "no_speech_prob": round(float(getattr(s, "no_speech_prob", 0.0)), 3),
+                "words": seg_words,
+            })
+
+        text = " ".join(text_parts).strip()
+        return Transcript(
+            text=text,
             language=language,
-            beam_size=1,
-            condition_on_previous_text=False,
-            # Our own VAD already gated the audio; this is a second safety net.
-            vad_filter=True,
+            duration_s=duration,
+            engine=self.info.engine_id,
+            words=words_list,
+            segments=segments_list,
         )
-        text = " ".join(s.text.strip() for s in segments).strip()
-        return Transcript(text, language, duration, self.info.engine_id)
 
 
 def build_cpu() -> FasterWhisperAsr:

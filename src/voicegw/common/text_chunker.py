@@ -20,6 +20,35 @@ _WHITESPACE = re.compile(r"\s+")
 # Protect decimals ("3.5") and common abbreviations from being split.
 _DECIMAL = re.compile(r"\d[.,]\d")
 
+PAUSE_SPLIT_RE = re.compile(r"(\[(?:pause|silence)\s+\d+\s*(?:ms|s)?\])", re.IGNORECASE)
+PAUSE_MATCH_RE = re.compile(r"^\[(?:pause|silence)\s+(\d+)\s*(ms|s)?\]$", re.IGNORECASE)
+
+
+def parse_pause_ms(text: str) -> int | None:
+    """If text is an inline pause tag like [pause 500ms] or [silence 1s], return duration in ms."""
+    m = PAUSE_MATCH_RE.match(text.strip())
+    if not m:
+        return None
+    val, unit = m.groups()
+    ms = int(val)
+    if unit and unit.lower() == "s":
+        ms *= 1000
+    return ms
+
+
+def extract_speed_tags(text: str) -> tuple[str, float]:
+    """Extract and strip [slow] or [fast] tags, returning cleaned text and speed multiplier."""
+    speed = 1.0
+    cleaned = text
+    if "[slow]" in cleaned or "[/slow]" in cleaned:
+        cleaned = cleaned.replace("[slow]", "").replace("[/slow]", "")
+        speed = 0.85
+    elif "[fast]" in cleaned or "[/fast]" in cleaned:
+        cleaned = cleaned.replace("[fast]", "").replace("[/fast]", "")
+        speed = 1.15
+    return cleaned.strip(), speed
+
+
 MIN_CHUNK_CHARS = 12
 MAX_CHUNK_CHARS = 220
 #: Hard cap on the opening chunk. Short = audio starts sooner; too short and
@@ -43,27 +72,39 @@ def _is_protected(text: str, idx: int) -> bool:
 
 
 def split_sentences(text: str) -> list[str]:
-    """Split into sentence-ish units, keeping terminal punctuation attached."""
+    """Split into sentence-ish units, keeping terminal punctuation and pause tags isolated."""
     text = normalize(text)
     if not text:
         return []
 
+    segments = PAUSE_SPLIT_RE.split(text)
     out: list[str] = []
-    start = 0
-    for i, ch in enumerate(text):
-        if ch in SENTENCE_END and not _is_protected(text, i):
-            piece = text[start : i + 1].strip()
-            if piece:
-                out.append(piece)
-            start = i + 1
-    tail = text[start:].strip()
-    if tail:
-        out.append(tail)
+    for segment in segments:
+        segment = segment.strip()
+        if not segment:
+            continue
+        if parse_pause_ms(segment) is not None:
+            out.append(segment)
+            continue
+
+        start = 0
+        for i, ch in enumerate(segment):
+            if ch in SENTENCE_END and not _is_protected(segment, i):
+                piece = segment[start : i + 1].strip()
+                if piece:
+                    out.append(piece)
+                start = i + 1
+        tail = segment[start:].strip()
+        if tail:
+            out.append(tail)
     return out
 
 
 def _split_long(piece: str) -> Iterator[str]:
     """Break an over-long sentence at clause marks, then at spaces."""
+    if parse_pause_ms(piece) is not None:
+        yield piece
+        return
     while len(piece) > MAX_CHUNK_CHARS:
         window = piece[:MAX_CHUNK_CHARS]
         cut = max((window.rfind(c) for c in CLAUSE_END), default=-1)

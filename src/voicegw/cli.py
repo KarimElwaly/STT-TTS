@@ -346,6 +346,25 @@ def transcribe(
 
 
 @app.command()
+def describe(
+    path: Path = typer.Argument(..., exists=True, readable=True),
+    verbose: bool = False,
+) -> None:
+    """Analyze acoustic prosody of an audio file and emit OmniVoice prompt tags."""
+    _setup_logging(verbose)
+    from .common.audio import load_audio_file
+    from .engines.prosody import describe_voice
+
+    audio = load_audio_file(str(path))
+    description, metrics = describe_voice(audio, 16000)
+    console.print(f"[bold cyan]OmniVoice Description:[/] [green]{description}[/]")
+    console.print("[dim]Acoustic Metrics:[/]")
+    for k, v in metrics.items():
+        console.print(f"  {k}: [bold]{v}[/]")
+
+
+
+@app.command()
 def say(
     text: str,
     out: Path = Path("out.wav"),
@@ -363,7 +382,7 @@ def say(
 
     import numpy as np
 
-    from .common.audio import encode_wav
+    from .common.audio import concat_with_crossfade, encode_wav
     from .core import VoiceCore
 
     async def run() -> None:
@@ -373,10 +392,12 @@ def say(
         if not chunks:
             console.print("[red]no audio produced[/]")
             return
-        samples = np.concatenate([c.samples for c in chunks])
+        sr = chunks[0].sample_rate
+        fade_samples = int(sr * 0.035)
+        samples = concat_with_crossfade([c.samples for c in chunks], fade_samples)
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_bytes(encode_wav(samples, chunks[0].sample_rate))
-        console.print(f"[green]wrote[/] {out} ({len(samples) / chunks[0].sample_rate:.1f}s)")
+        out.write_bytes(encode_wav(samples, sr))
+        console.print(f"[green]wrote[/] {out} ({len(samples) / sr:.1f}s)")
         await core.shutdown()
 
     _run(run())

@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 
 from ..common.protocols import AudioChunk, EngineInfo, Voice
-from ..common.text_chunker import chunk_text
+from ..common.text_chunker import chunk_text, extract_speed_tags, parse_pause_ms
 
 log = logging.getLogger(__name__)
 
@@ -99,7 +99,24 @@ class PiperTts:
             yield AudioChunk(np.zeros(0, dtype=np.float32), sr, is_final=True)
             return
         for i, piece in enumerate(chunks):
-            yield AudioChunk(self._generate(piece), sr, is_final=(i == len(chunks) - 1))
+            is_final = (i == len(chunks) - 1)
+            pause_ms = parse_pause_ms(piece)
+            if pause_ms is not None:
+                num_samples = int(sr * (pause_ms / 1000.0))
+                samples = np.zeros(num_samples, dtype=np.float32)
+                yield AudioChunk(samples, sr, is_final=is_final)
+                continue
+
+            clean_piece, speed = extract_speed_tags(piece)
+            if not clean_piece:
+                continue
+
+            samples = self._generate(clean_piece)
+            if speed != 1.0 and len(samples) > 0:
+                import librosa
+
+                samples = librosa.effects.time_stretch(samples, rate=speed)
+            yield AudioChunk(samples, sr, is_final=is_final)
 
 
 def build_cpu() -> PiperTts:

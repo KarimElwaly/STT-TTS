@@ -16,7 +16,7 @@ from collections.abc import Iterator
 import numpy as np
 
 from ..common.protocols import SAMPLE_RATE_OUT, AudioChunk, EngineInfo, Voice
-from ..common.text_chunker import chunk_text
+from ..common.text_chunker import chunk_text, extract_speed_tags, parse_pause_ms
 
 log = logging.getLogger(__name__)
 
@@ -189,12 +189,28 @@ class OmniVoiceTts:
             return
 
         for i, piece in enumerate(chunks):
+            is_final = (i == len(chunks) - 1)
+            pause_ms = parse_pause_ms(piece)
+            if pause_ms is not None:
+                num_samples = int(SAMPLE_RATE_OUT * (pause_ms / 1000.0))
+                samples = np.zeros(num_samples, dtype=np.float32)
+                yield AudioChunk(samples, SAMPLE_RATE_OUT, is_final=is_final)
+                continue
+
+            clean_piece, speed = extract_speed_tags(piece)
+            if not clean_piece:
+                continue
+
             # Diffusion cost is ~linear in steps and nearly flat in text
             # length, so only the very first piece -- the one the listener is
             # waiting on in silence -- is worth degrading.
             steps = self.first_num_step if (urgent and i == 0) else None
-            samples = self._generate(piece, voice, steps)
-            yield AudioChunk(samples, SAMPLE_RATE_OUT, is_final=(i == len(chunks) - 1))
+            samples = self._generate(clean_piece, voice, steps)
+            if speed != 1.0 and len(samples) > 0:
+                import librosa
+
+                samples = librosa.effects.time_stretch(samples, rate=speed)
+            yield AudioChunk(samples, SAMPLE_RATE_OUT, is_final=is_final)
 
 
 def build_gpu(device: str = "cuda:0") -> OmniVoiceTts:
