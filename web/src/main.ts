@@ -7,6 +7,9 @@ const connectBtn = $<HTMLButtonElement>("connect");
 const talkBtn = $<HTMLButtonElement>("talk");
 const stopBtn = $<HTMLButtonElement>("stop");
 const openMic = $<HTMLInputElement>("open-mic");
+const useAgent = $<HTMLInputElement>("use-agent");
+const sayText = $<HTMLInputElement>("say-text");
+const sayBtn = $<HTMLButtonElement>("say");
 const voiceSelect = $<HTMLSelectElement>("voice");
 const levelBar = $<HTMLProgressElement>("level");
 const transcript = $<HTMLDivElement>("transcript");
@@ -64,6 +67,8 @@ async function connect(): Promise<void> {
     await mic.start();
     talkBtn.disabled = false;
     voiceSelect.disabled = false;
+    sayText.disabled = false;
+    sayBtn.disabled = false;
     connectBtn.textContent = "Disconnect";
   };
 
@@ -79,6 +84,8 @@ async function connect(): Promise<void> {
     setStatus("disconnected");
     talkBtn.disabled = true;
     voiceSelect.disabled = true;
+    sayText.disabled = true;
+    sayBtn.disabled = true;
     connectBtn.textContent = "Connect";
     void mic.stop();
   };
@@ -97,6 +104,15 @@ function handleEvent(event: any): void {
       voiceSelect.replaceChildren(
         ...event.voices.map((id: string) => new Option(id, id)),
       );
+      // Start from the server's view rather than the markup default, and say
+      // so when there is no agent to send anything to.
+      useAgent.checked = event.agent;
+      if (!event.agent_available) {
+        useAgent.checked = false;
+        useAgent.disabled = true;
+        useAgent.parentElement!.title =
+          "No agent endpoint configured (VOICEGW_AGENT_BASE_URL) — replies are echoed.";
+      }
       void player.prepare(24_000);
       break;
     }
@@ -174,6 +190,25 @@ openMic.onchange = () => {
 };
 
 voiceSelect.onchange = () => send({ type: "config", voice: voiceSelect.value });
+
+useAgent.onchange = () => send({ type: "config", agent: useAgent.checked });
+
+// Synthesize typed text directly: no mic, no STT. With "Send to agent" off
+// this is a plain TTS test; with it on the text is treated as a user turn.
+const speakTyped = () => {
+  const text = sayText.value.trim();
+  if (!text) return;
+  addTurn("user", text);
+  assistantTurn = undefined;
+  player.flush();
+  send({ type: "text", text });
+  sayText.value = "";
+};
+
+sayBtn.onclick = speakTyped;
+sayText.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") speakTyped();
+});
 
 stopBtn.onclick = () => {
   player.flush();

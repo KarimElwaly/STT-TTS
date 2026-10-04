@@ -64,6 +64,18 @@ button:not(:disabled):hover { border-color: var(--accent); }
 
 .toggle { display: flex; align-items: center; gap: 0.4rem; color: var(--muted); font-size: 0.9rem; }
 
+#say-row { display: flex; gap: 0.6rem; }
+#say-text {
+  flex: 1;
+  font: inherit;
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+}
+#say-text:disabled { opacity: 0.45; }
+
 #meters { display: flex; flex-direction: column; gap: 0.6rem; }
 .meter { display: flex; align-items: center; gap: 0.6rem; font-size: 0.85rem; color: var(--muted); }
 progress { flex: 1; height: 8px; }

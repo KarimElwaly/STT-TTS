@@ -169,10 +169,27 @@ frames. Speaking over the assistant cancels playback (barge-in).
 
 Control frames: `{"type": "commit"}` (push-to-talk release),
 `{"type": "cancel"}`, `{"type": "text", "text": "…"}` (skip STT),
-`{"type": "config", "voice": "…", "language": "ar"}`.
+`{"type": "config", "voice": "…", "language": "ar", "agent": true}`.
 
 The agent is pluggable: point `VOICEGW_AGENT_BASE_URL` at any OpenAI-compatible
-chat endpoint.
+chat endpoint. Setting `"agent": false` on a session bypasses it entirely and
+speaks the input back verbatim — which exercises STT, TTS, streaming and
+barge-in without an LLM running. `session.created` reports `agent_available`
+so a client can show which mode is actually possible.
+
+### Web client
+
+```powershell
+cd web; npm install; npm run dev     # http://localhost:5173
+```
+
+**Connect** first — nothing works before the socket is open. Then either hold
+**Hold to talk**, or tick **Open mic (VAD)** and just speak. The **Speak** box
+synthesizes typed text directly, with no microphone and no STT. Untick **Send
+to agent** to test the audio path with no LLM at all.
+
+The HUD reports per-turn `ASR`, `First audio` and `Total` from server events,
+so the latency you see is measured on your machine rather than quoted here.
 
 ### MCP
 

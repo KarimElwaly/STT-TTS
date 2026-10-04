@@ -330,6 +330,95 @@ def test_realtime_accepts_text_at_the_limit(client):
         assert ws.receive_json()["type"] != "error"
 
 
+# --- agent bypass ----------------------------------------------------------
+#
+# Testing the audio path should not require an LLM endpoint to be reachable,
+# so a client can turn the agent off and have its text spoken back verbatim.
+
+
+def _drain_until(ws, kind: str, limit: int = 40) -> dict:
+    """Read events until `kind` arrives, skipping binary audio frames."""
+    for _ in range(limit):
+        message = ws.receive()
+        if "text" not in message:
+            continue  # audio
+        import json
+
+        event = json.loads(message["text"])
+        if event.get("type") == kind:
+            return event
+    raise AssertionError(f"never saw {kind!r}")
+
+
+def test_agent_can_be_turned_off_per_session(client):
+    with client.websocket_connect("/v1/realtime") as ws:
+        ws.receive_json()
+        ws.send_json({"type": "config", "agent": False})
+        event = ws.receive_json()
+        assert event["type"] == "config.updated"
+        assert event["agent"] is False
+
+
+def test_bypassed_agent_speaks_the_text_back_verbatim(client):
+    with client.websocket_connect("/v1/realtime") as ws:
+        ws.receive_json()
+        ws.send_json({"type": "config", "agent": False})
+        ws.receive_json()
+
+        ws.send_json({"type": "text", "text": "اختبار الصوت"})
+        done = _drain_until(ws, "response.done")
+        assert done["text"] == "اختبار الصوت"
+
+
+def test_bypassing_the_agent_still_produces_audio(client):
+    """The point of the mode is exercising TTS, so audio must still stream."""
+    with client.websocket_connect("/v1/realtime") as ws:
+        ws.receive_json()
+        ws.send_json({"type": "config", "agent": False})
+        ws.receive_json()
+
+        ws.send_json({"type": "text", "text": "اختبار"})
+        start = _drain_until(ws, "response.audio.start")
+        assert start["sample_rate"] == SAMPLE_RATE_OUT
+        assert "first_audio_ms" in start
+
+
+def test_echoed_turns_are_not_recorded_as_conversation(client):
+    """Otherwise they would poison the agent's context after switching back."""
+    from voicegw.realtime.session import RealtimeSession
+
+    sessions: list[RealtimeSession] = []
+    original = RealtimeSession.__init__
+
+    def spy(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        sessions.append(self)
+
+    RealtimeSession.__init__ = spy
+    try:
+        with client.websocket_connect("/v1/realtime") as ws:
+            ws.receive_json()
+            ws.send_json({"type": "config", "agent": False})
+            ws.receive_json()
+            ws.send_json({"type": "text", "text": "اختبار"})
+            _drain_until(ws, "response.done")
+    finally:
+        RealtimeSession.__init__ = original
+
+    assert sessions and sessions[0].history == []
+
+
+def test_session_announces_whether_an_agent_is_configured(client, monkeypatch):
+    """A client should be able to say so, not leave the user guessing."""
+    with client.websocket_connect("/v1/realtime") as ws:
+        created = ws.receive_json()
+        assert created["type"] == "session.created"
+        # The test settings carry no agent base url override, but whichever it
+        # is, the flag must be present and boolean so the UI can rely on it.
+        assert isinstance(created["agent_available"], bool)
+        assert created["agent"] is True
+
+
 # --- TTS routing -----------------------------------------------------------
 
 

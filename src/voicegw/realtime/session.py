@@ -7,7 +7,11 @@ Client -> server:
   * text frames (JSON): ``{"type": "commit"}`` (push-to-talk release),
     ``{"type": "cancel"}`` (barge-in / stop playback),
     ``{"type": "text", "text": "..."}`` (skip STT, synthesize directly),
-    ``{"type": "config", "voice": "...", "language": "ar"}``
+    ``{"type": "config", "voice": "...", "language": "ar", "agent": true}``
+
+Setting ``agent`` to false bypasses the LLM and speaks the input text back
+verbatim, which exercises STT, TTS, streaming and barge-in without needing an
+agent endpoint to be reachable.
 
 Server -> client:
   * text frames (JSON): ``session.created``, ``speech_started``,
@@ -33,7 +37,7 @@ from ..common.protocols import MAX_SYNTHESIS_CHARS
 from ..common.text_chunker import StreamingChunker
 from ..core import VoiceCore
 from ..engines.vad import UtteranceDetector
-from .agent import build_agent
+from .agent import EchoAgent, build_agent
 
 log = logging.getLogger(__name__)
 
@@ -46,6 +50,10 @@ class RealtimeSession:
         self.core = core
         self.detector = UtteranceDetector(core.vad_config)
         self.agent = build_agent(core.settings)
+        #: Speaks the input straight back. Lets a client test the audio path
+        #: end to end when no agent endpoint is running.
+        self.echo = EchoAgent()
+        self.use_agent = True
         self.history: list[dict] = []
         self.voice: str | None = None
         self.language: str | None = None
@@ -107,6 +115,11 @@ class RealtimeSession:
             realtime_capable=True,
             input_sample_rate=16_000,
             voices=[v.id for v in self.core.voices.list()],
+            # False when no agent endpoint is configured, so a client can say
+            # so up front instead of leaving the user wondering why every
+            # reply is an echo.
+            agent_available=not isinstance(self.agent, EchoAgent),
+            agent=self.use_agent,
         )
 
         try:
@@ -167,7 +180,14 @@ class RealtimeSession:
                 self.voice = msg["voice"]
             if "language" in msg:
                 self.language = msg["language"]
-            await self.send(type="config.updated", voice=self.voice, language=self.language)
+            if "agent" in msg:
+                self.use_agent = bool(msg["agent"])
+            await self.send(
+                type="config.updated",
+                voice=self.voice,
+                language=self.language,
+                agent=self.use_agent,
+            )
         elif kind == "text":
             text = msg.get("text", "")
             # The REST façade bounds this through its request model; the socket
@@ -223,7 +243,8 @@ class RealtimeSession:
                     await self.ws.send_bytes(float32_to_pcm16(chunk.samples))
 
         try:
-            async for delta in self.agent(user_text, self.history):
+            responder = self.agent if self.use_agent else self.echo
+            async for delta in responder(user_text, self.history):
                 reply_parts.append(delta)
                 await self.send(type="response.text.delta", delta=delta)
                 for piece in chunker.push(delta):
@@ -232,10 +253,16 @@ class RealtimeSession:
                 await speak(piece)
 
             reply = "".join(reply_parts).strip()
-            self.history.extend(
-                [{"role": "user", "content": user_text}, {"role": "assistant", "content": reply}]
-            )
-            del self.history[: max(0, len(self.history) - MAX_HISTORY_TURNS * 2)]
+            if self.use_agent:
+                # Echoed turns are not conversation; recording them would
+                # poison the agent's context after switching back.
+                self.history.extend(
+                    [
+                        {"role": "user", "content": user_text},
+                        {"role": "assistant", "content": reply},
+                    ]
+                )
+                del self.history[: max(0, len(self.history) - MAX_HISTORY_TURNS * 2)]
 
             await self.send(
                 type="response.done",

@@ -26,6 +26,20 @@
         </label>
         <select id="voice" disabled></select>
         <button id="stop" disabled>Stop audio</button>
+        <label class="toggle" title="Off: the gateway speaks your words back without an LLM">
+          <input type="checkbox" id="use-agent" checked />
+          Send to agent
+        </label>
+      </section>
+
+      <section id="say-row">
+        <input
+          id="say-text"
+          type="text"
+          placeholder="اكتب نصًا لنطقه… (TTS only, skips the mic)"
+          disabled
+        />
+        <button id="say" disabled>Speak</button>
       </section>
 
       <section id="meters">
