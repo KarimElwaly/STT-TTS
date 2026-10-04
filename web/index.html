@@ -3,11 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>voicegw — Realtime Voice Gateway & Studio</title>
+    <title id="doc-title">voicegw — بوابة واستوديو الصوت الفوري</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
       rel="stylesheet"
     />
     <link rel="stylesheet" href="/src/style.css" />
@@ -17,7 +17,7 @@
       <div class="brand">
         <div class="logo-orb"></div>
         <h1>voicegw</h1>
-        <span class="subbrand">Gateway & Voice Studio</span>
+        <span class="subbrand" id="subbrand">بوابة واستوديو الصوت</span>
       </div>
 
       <nav class="nav-tabs" role="tablist">
@@ -29,10 +29,16 @@
         </button>
       </nav>
 
-      <div id="badges">
-        <span class="badge" id="profile-badge">…</span>
-        <span class="badge" id="engine-badge"></span>
-        <span class="badge" id="status-badge">disconnected</span>
+      <div class="header-right">
+        <button id="lang-toggle-btn" class="lang-btn" title="تبديل اللغة / Switch Language">
+          <span class="lang-icon">🌐</span>
+          <span id="lang-toggle-text">English</span>
+        </button>
+        <div id="badges">
+          <span class="badge" id="profile-badge">…</span>
+          <span class="badge" id="engine-badge"></span>
+          <span class="badge" id="status-badge">غير متصل</span>
+        </div>
       </div>
     </header>
 
@@ -40,17 +46,17 @@
       <!-- Tab 1: Live Conversation -->
       <section id="tab-conversation" class="tab-pane active">
         <section id="controls">
-          <button id="connect" class="primary-btn">Connect</button>
-          <button id="talk" disabled>Hold to talk</button>
-          <label class="toggle">
+          <button id="connect" class="primary-btn">اتصال</button>
+          <button id="talk" disabled>اضغط وتحدث</button>
+          <label class="toggle" id="open-mic-label-wrapper">
             <input type="checkbox" id="open-mic" />
-            Open mic (VAD)
+            <span id="open-mic-label">الميكروفون التلقائي (VAD)</span>
           </label>
           <select id="voice" disabled aria-label="اختر الصوت"></select>
-          <button id="stop" disabled>Stop audio</button>
-          <label class="toggle" title="Off: the gateway speaks your words back without an LLM">
+          <button id="stop" disabled>إيقاف الصوت</button>
+          <label class="toggle" id="use-agent-wrapper" title="عند التعطيل: تعيد البوابة نطق كلماتك مباشرة دون نموذج لغوي (LLM)">
             <input type="checkbox" id="use-agent" checked />
-            Send to agent
+            <span id="use-agent-label">إرسال إلى الوكيل</span>
           </label>
         </section>
 
@@ -58,21 +64,21 @@
           <input
             id="say-text"
             type="text"
-            placeholder="اكتب نصًا لنطقه… (TTS only, skips the mic)"
+            placeholder="اكتب نصًا لنطقه… (TTS فقط، يتجاوز الميكروفون)"
             disabled
           />
-          <button id="say" disabled>Speak</button>
+          <button id="say" disabled>نطق</button>
         </section>
 
         <section id="meters">
           <div class="meter">
-            <span>Mic</span>
+            <span id="mic-meter-label">الميكروفون</span>
             <progress id="level" max="1" value="0"></progress>
           </div>
           <div id="hud">
-            <span>ASR <b id="hud-asr">—</b></span>
-            <span>First audio <b id="hud-audio">—</b></span>
-            <span>Total <b id="hud-total">—</b></span>
+            <span><span id="hud-asr-label">التعرف (ASR)</span> <b id="hud-asr">—</b></span>
+            <span><span id="hud-first-audio-label">أول صوت</span> <b id="hud-audio">—</b></span>
+            <span><span id="hud-total-label">الإجمالي</span> <b id="hud-total">—</b></span>
           </div>
         </section>
 
@@ -84,8 +90,8 @@
         <div class="studio-grid">
           <!-- Left Column: Recorder & Visualizer -->
           <div class="studio-panel">
-            <h2>تسجيل العينة المرجعية (Reference Sample)</h2>
-            <p class="panel-desc">
+            <h2 id="studio-record-title">تسجيل العينة المرجعية (Reference Sample)</h2>
+            <p class="panel-desc" id="studio-record-desc">
               سجّل عينة صوتية نقية لمدة 3 إلى 10 ثوانٍ باللغة العربية مع نطق سليم.
             </p>
 
@@ -101,17 +107,17 @@
             </div>
 
             <div class="upload-alt">
-              <span>أو ارفع ملف صوتي (WAV / MP3):</span>
+              <span id="studio-upload-label">أو ارفع ملفًا صوتيًا (WAV / MP3):</span>
               <input type="file" id="studio-file-upload" accept="audio/*" />
             </div>
 
             <!-- Analysis Reports Grid -->
             <div id="studio-analysis-section" class="analysis-section" style="display: none;">
-              <h3>نتائج الفحص والتحليل الصوتي</h3>
+              <h3 id="studio-analysis-title">نتائج الفحص والتحليل الصوتي</h3>
               <div class="analysis-cards">
                 <div class="analysis-card" id="qc-card">
                   <div class="card-header">
-                    <h4>جودة الصوت (Audio QC)</h4>
+                    <h4 id="qc-card-title">جودة الصوت (Audio QC)</h4>
                     <span id="qc-badge" class="badge">جيد</span>
                   </div>
                   <ul class="metrics-list" id="qc-metrics-list"></ul>
@@ -119,7 +125,7 @@
 
                 <div class="analysis-card" id="prosody-card">
                   <div class="card-header">
-                    <h4>التحليل النغمي (Prosody Mirror)</h4>
+                    <h4 id="prosody-card-title">التحليل النغمي (Prosody Mirror)</h4>
                   </div>
                   <div class="tags-container" id="prosody-tags"></div>
                   <ul class="metrics-list" id="prosody-metrics-list"></ul>
@@ -130,14 +136,14 @@
 
           <!-- Right Column: Registration & Voices List -->
           <div class="studio-panel">
-            <h2>إنشاء صوت مستنسخ جديد</h2>
-            <p class="panel-desc">
+            <h2 id="studio-create-title">إنشاء صوت مستنسخ جديد</h2>
+            <p class="panel-desc" id="studio-create-desc">
               سيتم حفظ الصوت في الـ Voice Registry ويكون جاهزاً فوراً للاستخدام والمحادثة.
             </p>
 
             <form id="studio-voice-form" class="studio-form">
               <div class="form-group">
-                <label for="new-voice-id">معرّف الصوت (ID)</label>
+                <label for="new-voice-id" id="new-voice-id-label">معرّف الصوت (ID)</label>
                 <input
                   type="text"
                   id="new-voice-id"
@@ -148,7 +154,7 @@
               </div>
 
               <div class="form-group">
-                <label for="new-voice-label">اسم الصوت المعروض</label>
+                <label for="new-voice-label" id="new-voice-label-label">اسم الصوت المعروض</label>
                 <input
                   type="text"
                   id="new-voice-label"
@@ -158,7 +164,7 @@
               </div>
 
               <div class="form-group">
-                <label for="new-voice-ref-text">النص المطابق للتسجيل المرجعي (Ref Text)</label>
+                <label for="new-voice-ref-text" id="new-voice-ref-text-label">النص المطابق للتسجيل المرجعي (Ref Text)</label>
                 <textarea
                   id="new-voice-ref-text"
                   rows="3"
@@ -173,7 +179,7 @@
             </form>
 
             <div class="voice-tester-box">
-              <h3>اختبار النطق الفوري</h3>
+              <h3 id="studio-test-title">اختبار النطق الفوري</h3>
               <div class="test-row">
                 <input
                   type="text"
@@ -187,7 +193,7 @@
             </div>
 
             <div class="registered-voices-box">
-              <h3>الأصوات المسجلة في البوابة</h3>
+              <h3 id="studio-voices-title">الأصوات المسجلة في البوابة</h3>
               <div id="studio-voices-list" class="voices-chips"></div>
             </div>
           </div>

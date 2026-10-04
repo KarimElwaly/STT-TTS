@@ -1,44 +1,45 @@
 import { MicCapture, StreamPlayer, floatToPcm16, pcm16ToFloat } from "./audio";
+import { Lang, translations } from "./i18n";
 import "./style.css";
 
 const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
+
+// Language state
+let currentLang: Lang = (localStorage.getItem("voicegw_lang") as Lang) || "ar";
+const t = () => translations[currentLang];
 
 // Navigation
 const tabBtnConv = $<HTMLButtonElement>("tab-btn-conversation");
 const tabBtnStudio = $<HTMLButtonElement>("tab-btn-studio");
 const tabPaneConv = $<HTMLElement>("tab-conversation");
 const tabPaneStudio = $<HTMLElement>("tab-studio");
+const langToggleBtn = $<HTMLButtonElement>("lang-toggle-btn");
+const langToggleText = $<HTMLSpanElement>("lang-toggle-text");
 
-tabBtnConv.onclick = () => {
-  tabBtnConv.classList.add("active");
-  tabBtnConv.setAttribute("aria-selected", "true");
-  tabBtnStudio.classList.remove("active");
-  tabBtnStudio.setAttribute("aria-selected", "false");
-  tabPaneConv.classList.add("active");
-  tabPaneStudio.classList.remove("active");
-};
-
-tabBtnStudio.onclick = () => {
-  tabBtnStudio.classList.add("active");
-  tabBtnStudio.setAttribute("aria-selected", "true");
-  tabBtnConv.classList.remove("active");
-  tabBtnConv.setAttribute("aria-selected", "false");
-  tabPaneStudio.classList.add("active");
-  tabPaneConv.classList.remove("active");
-  void refreshVoicesList();
-};
+// Brand & Titles
+const docTitle = $<HTMLTitleElement>("doc-title");
+const subbrand = $<HTMLSpanElement>("subbrand");
 
 // Conversation elements
 const connectBtn = $<HTMLButtonElement>("connect");
 const talkBtn = $<HTMLButtonElement>("talk");
 const stopBtn = $<HTMLButtonElement>("stop");
 const openMic = $<HTMLInputElement>("open-mic");
+const openMicLabel = $<HTMLSpanElement>("open-mic-label");
 const useAgent = $<HTMLInputElement>("use-agent");
+const useAgentLabel = $<HTMLSpanElement>("use-agent-label");
+const useAgentWrapper = $<HTMLElement>("use-agent-wrapper");
 const sayText = $<HTMLInputElement>("say-text");
 const sayBtn = $<HTMLButtonElement>("say");
 const voiceSelect = $<HTMLSelectElement>("voice");
 const levelBar = $<HTMLProgressElement>("level");
+const micMeterLabel = $<HTMLSpanElement>("mic-meter-label");
+const hudAsrLabel = $<HTMLSpanElement>("hud-asr-label");
+const hudFirstAudioLabel = $<HTMLSpanElement>("hud-first-audio-label");
+const hudTotalLabel = $<HTMLSpanElement>("hud-total-label");
 const transcript = $<HTMLDivElement>("transcript");
+
+// Badges
 const profileBadge = $<HTMLSpanElement>("profile-badge");
 const engineBadge = $<HTMLSpanElement>("engine-badge");
 const statusBadge = $<HTMLSpanElement>("status-badge");
@@ -46,8 +47,48 @@ const hudAsr = $<HTMLElement>("hud-asr");
 const hudAudio = $<HTMLElement>("hud-audio");
 const hudTotal = $<HTMLElement>("hud-total");
 
+// Studio Elements
+const studioRecTitle = $<HTMLElement>("studio-record-title");
+const studioRecDesc = $<HTMLElement>("studio-record-desc");
+const recBtn = $<HTMLButtonElement>("studio-record-btn");
+const stopRecBtn = $<HTMLButtonElement>("studio-stop-rec-btn");
+const playRecBtn = $<HTMLButtonElement>("studio-play-rec-btn");
+const uploadLabel = $<HTMLElement>("studio-upload-label");
+const fileUpload = $<HTMLInputElement>("studio-file-upload");
+const timerEl = $<HTMLElement>("studio-rec-timer");
+const canvas = $<HTMLCanvasElement>("studio-visualizer");
+const canvasCtx = canvas.getContext("2d");
+
+const analysisSection = $<HTMLElement>("studio-analysis-section");
+const studioAnalysisTitle = $<HTMLElement>("studio-analysis-title");
+const qcCardTitle = $<HTMLElement>("qc-card-title");
+const qcBadge = $<HTMLElement>("qc-badge");
+const qcMetricsList = $<HTMLElement>("qc-metrics-list");
+const prosodyCardTitle = $<HTMLElement>("prosody-card-title");
+const prosodyTags = $<HTMLElement>("prosody-tags");
+const prosodyMetricsList = $<HTMLElement>("prosody-metrics-list");
+
+const studioCreateTitle = $<HTMLElement>("studio-create-title");
+const studioCreateDesc = $<HTMLElement>("studio-create-desc");
+const studioForm = $<HTMLFormElement>("studio-voice-form");
+const voiceIdLabel = $<HTMLElement>("new-voice-id-label");
+const voiceIdInput = $<HTMLInputElement>("new-voice-id");
+const voiceNameLabel = $<HTMLElement>("new-voice-label-label");
+const voiceLabelInput = $<HTMLInputElement>("new-voice-label");
+const refTextLabel = $<HTMLElement>("new-voice-ref-text-label");
+const voiceRefTextInput = $<HTMLTextAreaElement>("new-voice-ref-text");
+const saveBtn = $<HTMLButtonElement>("studio-save-btn");
+
+const studioTestTitle = $<HTMLElement>("studio-test-title");
+const testText = $<HTMLInputElement>("studio-test-text");
+const testBtn = $<HTMLButtonElement>("studio-test-btn");
+const audioPlayer = $<HTMLAudioElement>("studio-audio-player");
+const studioVoicesTitle = $<HTMLElement>("studio-voices-title");
+const voicesListEl = $<HTMLElement>("studio-voices-list");
+
 let socket: WebSocket | undefined;
 let assistantTurn: HTMLDivElement | undefined;
+let rawVoices: Array<{ id: string; label: string; is_clone: boolean; tags: string[] }> = [];
 
 const player = new StreamPlayer((playing) => {
   stopBtn.disabled = !playing;
@@ -79,13 +120,116 @@ function addTurn(who: "user" | "assistant" | "error", text: string): HTMLDivElem
   return div;
 }
 
+function applyLanguage(lang: Lang): void {
+  currentLang = lang;
+  localStorage.setItem("voicegw_lang", lang);
+  const cur = t();
+
+  document.documentElement.lang = lang;
+  document.documentElement.dir = lang === "ar" ? "rtl" : "ltr";
+
+  // Document metadata
+  if (docTitle) docTitle.textContent = cur.pageTitle;
+  subbrand.textContent = cur.subbrand;
+  langToggleText.textContent = cur.toggleToLang;
+
+  // Tabs
+  tabBtnConv.textContent = cur.tabConversation;
+  tabBtnStudio.textContent = cur.tabStudio;
+
+  // Controls
+  const isConnected = socket?.readyState === WebSocket.OPEN;
+  connectBtn.textContent = isConnected ? cur.disconnect : cur.connect;
+  talkBtn.textContent = cur.holdToTalk;
+  openMicLabel.textContent = cur.openMicVad;
+  voiceSelect.setAttribute("aria-label", cur.voiceSelectLabel);
+  stopBtn.textContent = cur.stopAudio;
+  useAgentLabel.textContent = cur.sendToAgent;
+  if (!useAgent.disabled) {
+    useAgentWrapper.title = cur.agentTooltipOff;
+  }
+  sayText.placeholder = cur.sayPlaceholder;
+  sayBtn.textContent = cur.speakBtn;
+
+  // Meters & HUD
+  micMeterLabel.textContent = cur.micLabel;
+  hudAsrLabel.textContent = cur.hudAsr;
+  hudFirstAudioLabel.textContent = cur.hudFirstAudio;
+  hudTotalLabel.textContent = cur.hudTotal;
+
+  // Studio Left
+  studioRecTitle.textContent = cur.studioRecordTitle;
+  studioRecDesc.textContent = cur.studioRecordDesc;
+  if (!recBtn.classList.contains("recording")) {
+    recBtn.textContent = cur.studioRecordBtn;
+  }
+  stopRecBtn.textContent = cur.studioStopRecBtn;
+  playRecBtn.textContent = cur.studioPlayRecBtn;
+  uploadLabel.textContent = cur.studioUploadPrompt;
+  studioAnalysisTitle.textContent = cur.studioAnalysisTitle;
+  qcCardTitle.textContent = cur.qcCardTitle;
+  prosodyCardTitle.textContent = cur.prosodyCardTitle;
+
+  // Studio Right
+  studioCreateTitle.textContent = cur.studioCreateTitle;
+  studioCreateDesc.textContent = cur.studioCreateDesc;
+  voiceIdLabel.textContent = cur.voiceIdLabel;
+  voiceIdInput.placeholder = cur.voiceIdPlaceholder;
+  voiceNameLabel.textContent = cur.voiceNameLabel;
+  voiceLabelInput.placeholder = cur.voiceNamePlaceholder;
+  refTextLabel.textContent = cur.refTextLabel;
+  voiceRefTextInput.placeholder = cur.refTextPlaceholder;
+  saveBtn.textContent = cur.saveVoiceBtn;
+
+  // Instant Test
+  studioTestTitle.textContent = cur.instantTestTitle;
+  testText.placeholder = cur.instantTestPlaceholder;
+  if (
+    !testText.value ||
+    testText.value === translations.ar.instantTestDefault ||
+    testText.value === translations.en.instantTestDefault
+  ) {
+    testText.value = cur.instantTestDefault;
+  }
+  testBtn.textContent = cur.instantTestBtn;
+  studioVoicesTitle.textContent = cur.registeredVoicesTitle;
+
+  // Re-render voice chips to localize badges
+  renderVoicesChips();
+}
+
+langToggleBtn.onclick = () => {
+  const nextLang: Lang = currentLang === "ar" ? "en" : "ar";
+  applyLanguage(nextLang);
+};
+
+tabBtnConv.onclick = () => {
+  tabBtnConv.classList.add("active");
+  tabBtnConv.setAttribute("aria-selected", "true");
+  tabBtnStudio.classList.remove("active");
+  tabBtnStudio.setAttribute("aria-selected", "false");
+  tabPaneConv.classList.add("active");
+  tabPaneStudio.classList.remove("active");
+};
+
+tabBtnStudio.onclick = () => {
+  tabBtnStudio.classList.add("active");
+  tabBtnStudio.setAttribute("aria-selected", "true");
+  tabBtnConv.classList.remove("active");
+  tabBtnConv.setAttribute("aria-selected", "false");
+  tabPaneStudio.classList.add("active");
+  tabPaneConv.classList.remove("active");
+  void refreshVoicesList();
+};
+
 function wsUrl(): string {
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
   return `${protocol}//${location.host}/v1/realtime`;
 }
 
 async function connect(): Promise<void> {
-  setStatus("connecting…");
+  const cur = t();
+  setStatus(cur.statusConnecting);
   socket = new WebSocket(wsUrl());
   socket.binaryType = "arraybuffer";
 
@@ -95,7 +239,7 @@ async function connect(): Promise<void> {
     voiceSelect.disabled = false;
     sayText.disabled = false;
     sayBtn.disabled = false;
-    connectBtn.textContent = "Disconnect";
+    connectBtn.textContent = cur.disconnect;
   };
 
   socket.onmessage = (event) => {
@@ -107,23 +251,25 @@ async function connect(): Promise<void> {
   };
 
   socket.onclose = () => {
-    setStatus("disconnected");
+    const cur = t();
+    setStatus(cur.statusDisconnected);
     talkBtn.disabled = true;
     voiceSelect.disabled = true;
     sayText.disabled = true;
     sayBtn.disabled = true;
-    connectBtn.textContent = "Connect";
+    connectBtn.textContent = cur.connect;
     void mic.stop();
   };
 
-  socket.onerror = () => setStatus("connection error", "warn");
+  socket.onerror = () => setStatus(t().statusConnError, "warn");
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function handleEvent(event: any): void {
+  const cur = t();
   switch (event.type) {
     case "session.created": {
-      setStatus("connected", "ok");
+      setStatus(cur.statusConnected, "ok");
       profileBadge.textContent = `${event.profile} · ${event.device}`;
       profileBadge.className = `badge ${event.profile === "gpu" ? "ok" : "warn"}`;
       engineBadge.textContent = `${event.asr_engine} → ${event.tts_engine}`;
@@ -132,18 +278,17 @@ function handleEvent(event: any): void {
       if (!event.agent_available) {
         useAgent.checked = false;
         useAgent.disabled = true;
-        useAgent.parentElement!.title =
-          "No agent endpoint configured (VOICEGW_AGENT_BASE_URL) — replies are echoed.";
+        useAgentWrapper.title = cur.agentTooltipDisabled;
       }
       void player.prepare(24_000);
       break;
     }
     case "speech_started":
-      setStatus("listening…", "ok");
+      setStatus(cur.statusListening, "ok");
       player.flush();
       break;
     case "transcript.final":
-      setStatus("thinking…");
+      setStatus(cur.statusThinking);
       hudAsr.textContent = event.latency_ms ? `${event.latency_ms} ms` : "—";
       if (event.text) addTurn("user", event.text);
       assistantTurn = undefined;
@@ -153,17 +298,17 @@ function handleEvent(event: any): void {
       assistantTurn.append(document.createTextNode(event.delta));
       break;
     case "response.audio.start":
-      setStatus("speaking", "ok");
+      setStatus(cur.statusSpeaking, "ok");
       hudAudio.textContent = `${event.first_audio_ms} ms`;
       void player.prepare(event.sample_rate);
       break;
     case "response.done":
-      setStatus("connected", "ok");
+      setStatus(cur.statusConnected, "ok");
       hudTotal.textContent = `${event.total_ms} ms`;
       break;
     case "response.cancelled":
       player.flush();
-      setStatus(`cancelled (${event.reason})`, "warn");
+      setStatus(`${cur.statusCancelled} (${event.reason})`, "warn");
       break;
     case "error":
       addTurn("error", `${event.code}: ${event.message}`);
@@ -234,31 +379,6 @@ stopBtn.onclick = () => {
 // ---------------------------------------------------------------------------
 // Studio View Logic
 // ---------------------------------------------------------------------------
-const recBtn = $<HTMLButtonElement>("studio-record-btn");
-const stopRecBtn = $<HTMLButtonElement>("studio-stop-rec-btn");
-const playRecBtn = $<HTMLButtonElement>("studio-play-rec-btn");
-const fileUpload = $<HTMLInputElement>("studio-file-upload");
-const timerEl = $<HTMLElement>("studio-rec-timer");
-const canvas = $<HTMLCanvasElement>("studio-visualizer");
-const canvasCtx = canvas.getContext("2d");
-
-const analysisSection = $<HTMLElement>("studio-analysis-section");
-const qcBadge = $<HTMLElement>("qc-badge");
-const qcMetricsList = $<HTMLElement>("qc-metrics-list");
-const prosodyTags = $<HTMLElement>("prosody-tags");
-const prosodyMetricsList = $<HTMLElement>("prosody-metrics-list");
-
-const studioForm = $<HTMLFormElement>("studio-voice-form");
-const voiceIdInput = $<HTMLInputElement>("new-voice-id");
-const voiceLabelInput = $<HTMLInputElement>("new-voice-label");
-const voiceRefTextInput = $<HTMLTextAreaElement>("new-voice-ref-text");
-const saveBtn = $<HTMLButtonElement>("studio-save-btn");
-
-const testText = $<HTMLInputElement>("studio-test-text");
-const testBtn = $<HTMLButtonElement>("studio-test-btn");
-const audioPlayer = $<HTMLAudioElement>("studio-audio-player");
-const voicesListEl = $<HTMLElement>("studio-voices-list");
-
 let mediaRecorder: MediaRecorder | null = null;
 let audioChunks: Blob[] = [];
 let recordedBlob: Blob | null = null;
@@ -293,6 +413,7 @@ function drawVisualizer() {
 }
 
 recBtn.onclick = async () => {
+  const cur = t();
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     audioChunks = [];
@@ -336,14 +457,16 @@ recBtn.onclick = async () => {
       timerEl.textContent = `${mins}:${secs}`;
     }, 200);
   } catch (err) {
-    alert("تعذر الوصول إلى الميكروفون: " + err);
+    alert(cur.micAccessError + err);
   }
 };
 
 stopRecBtn.onclick = () => {
+  const cur = t();
   if (mediaRecorder && mediaRecorder.state !== "inactive") {
     mediaRecorder.stop();
     recBtn.classList.remove("recording");
+    recBtn.textContent = cur.studioRecordBtn;
     recBtn.disabled = false;
     stopRecBtn.disabled = true;
     window.clearInterval(recTimerInterval);
@@ -369,9 +492,10 @@ fileUpload.onchange = async () => {
 };
 
 async function runAnalysis(blob: Blob) {
+  const cur = t();
   analysisSection.style.display = "block";
-  prosodyTags.innerHTML = "<span class='tag-chip'>جاري التحليل النغمي…</span>";
-  qcMetricsList.innerHTML = "<li>جاري فحص جودة الصوت…</li>";
+  prosodyTags.innerHTML = `<span class='tag-chip'>${cur.prosodyAnalyzing}</span>`;
+  qcMetricsList.innerHTML = `<li>${cur.qcAnalyzing}</li>`;
 
   const formData = new FormData();
   formData.append("file", blob, "sample.wav");
@@ -396,57 +520,58 @@ async function runAnalysis(blob: Blob) {
 
     // Render prosody metrics
     prosodyMetricsList.innerHTML = `
-      <li><span>تردد النغمة الأساسي (F0):</span> <b>${data.metrics.f0_hz ? data.metrics.f0_hz + " Hz" : "—"}</b></li>
-      <li><span>نسبة النطق الصوتي (Voicing):</span> <b>${Math.round(data.metrics.voicing_ratio * 100)}%</b></li>
-      <li><span>معدل المقاطع الصوتية:</span> <b>${data.metrics.syllables_per_s} syllables/s</b></li>
-      <li><span>شدة الصوت (RMS):</span> <b>${data.metrics.rms_dbfs} dBFS</b></li>
+      <li><span>${cur.prosodyF0}</span> <b>${data.metrics.f0_hz ? data.metrics.f0_hz + " Hz" : "—"}</b></li>
+      <li><span>${cur.prosodyVoicing}</span> <b>${Math.round(data.metrics.voicing_ratio * 100)}%</b></li>
+      <li><span>${cur.prosodySyllables}</span> <b>${data.metrics.syllables_per_s} syllables/s</b></li>
+      <li><span>${cur.prosodyLoudness}</span> <b>${data.metrics.rms_dbfs} dBFS</b></li>
     `;
 
     // Render QC report
     const rms = data.metrics.rms_dbfs;
-    let qcStatus = "ممتاز";
+    let qcStatus = cur.qcStatusExcellent;
     let qcClass = "ok";
     const warnings: string[] = [];
 
     if (rms < -35) {
-      qcStatus = "منخفض جداً";
+      qcStatus = cur.qcStatusTooQuiet;
       qcClass = "warn";
-      warnings.push("الصوت هادئ جداً، يفضل الاقتراب من الميكروفون");
+      warnings.push(cur.qcWarnQuiet);
     } else if (rms > -6) {
-      qcStatus = "مرتفع جداً";
+      qcStatus = cur.qcStatusTooLoud;
       qcClass = "warn";
-      warnings.push("الصوت يقترب من حد التشويش");
+      warnings.push(cur.qcWarnLoud);
     }
 
     qcBadge.textContent = qcStatus;
     qcBadge.className = `badge ${qcClass}`;
 
     qcMetricsList.innerHTML = `
-      <li><span>شدة الإشارة:</span> <b>${rms} dBFS</b></li>
-      <li><span>الحالة:</span> <b>${qcStatus}</b></li>
+      <li><span>${cur.qcSignalRms}</span> <b>${rms} dBFS</b></li>
+      <li><span>${cur.qcStatusLabel}</span> <b>${qcStatus}</b></li>
       ${warnings.map((w) => `<li style="color: var(--warn); font-size: 0.75rem;">⚠ ${w}</li>`).join("")}
     `;
   } catch (err) {
-    prosodyTags.innerHTML = `<span style="color: var(--danger);">فشل التحليل: ${err}</span>`;
+    prosodyTags.innerHTML = `<span style="color: var(--danger);">Error: ${err}</span>`;
   }
 }
 
 studioForm.onsubmit = async (e) => {
   e.preventDefault();
+  const cur = t();
   if (!recordedBlob) {
-    alert("يرجى تسجيل أو رفع عينة صوتية أولاً.");
+    alert(cur.recordFirstPrompt);
     return;
   }
 
   saveBtn.disabled = true;
-  saveBtn.textContent = "جاري الحفظ…";
+  saveBtn.textContent = cur.savingVoiceBtn;
 
   const formData = new FormData();
   formData.append("id", voiceIdInput.value.trim());
   formData.append("label", voiceLabelInput.value.trim());
   formData.append("ref_text", voiceRefTextInput.value.trim());
   formData.append("file", recordedBlob, `${voiceIdInput.value.trim()}.wav`);
-  formData.append("language", "ar");
+  formData.append("language", currentLang);
 
   try {
     const res = await fetch("/v1/voices", {
@@ -458,23 +583,24 @@ studioForm.onsubmit = async (e) => {
       throw new Error(err.detail || JSON.stringify(err));
     }
     const created = await res.json();
-    alert(`تم تسجيل الصوت '${created.label}' بنجاح!`);
+    alert(`${cur.voiceSavedSuccess} ('${created.label}')`);
     void refreshVoicesList();
   } catch (err) {
-    alert("حدث خطأ أثناء الحفظ: " + err);
+    alert(cur.saveError + err);
   } finally {
     saveBtn.disabled = false;
-    saveBtn.textContent = "حفظ وتسجيل الصوت";
+    saveBtn.textContent = cur.saveVoiceBtn;
   }
 };
 
 testBtn.onclick = async () => {
+  const cur = t();
   const vId = voiceIdInput.value.trim() || voiceSelect.value || "default";
   const text = testText.value.trim();
   if (!text) return;
 
   testBtn.disabled = true;
-  testBtn.textContent = "جاري النطق…";
+  testBtn.textContent = cur.instantTestingBtn;
 
   try {
     const res = await fetch("/v1/audio/speech", {
@@ -494,45 +620,56 @@ testBtn.onclick = async () => {
     audioPlayer.style.display = "block";
     void audioPlayer.play();
   } catch (err) {
-    alert("فشل اختبار النطق: " + err);
+    alert(cur.synthTestError + err);
   } finally {
     testBtn.disabled = false;
-    testBtn.textContent = "نطق";
+    testBtn.textContent = cur.instantTestBtn;
   }
 };
+
+function renderVoicesChips() {
+  const cur = t();
+  voicesListEl.innerHTML = "";
+  rawVoices.forEach((v) => {
+    const chip = document.createElement("div");
+    chip.className = "voice-badge-card";
+    const badgeText = v.is_clone ? cur.cloneBadge : cur.designBadge;
+    chip.innerHTML = `
+      <span>${v.label}</span>
+      <span class="v-type">${badgeText}</span>
+    `;
+    chip.onclick = () => {
+      document.querySelectorAll(".voice-badge-card").forEach((c) => c.classList.remove("active"));
+      chip.classList.add("active");
+      voiceIdInput.value = v.id;
+      voiceLabelInput.value = v.label;
+      voiceSelect.value = v.id;
+    };
+    voicesListEl.appendChild(chip);
+  });
+}
 
 async function refreshVoicesList() {
   try {
     const res = await fetch("/v1/voices");
     if (!res.ok) return;
     const data = await res.json();
-    const voices = data.data || [];
+    rawVoices = data.data || [];
 
     // Populate select
-    voiceSelect.replaceChildren(...voices.map((v: { id: string; label: string }) => new Option(v.label || v.id, v.id)));
+    voiceSelect.replaceChildren(
+      ...rawVoices.map((v) => new Option(v.label || v.id, v.id)),
+    );
 
-    // Populate chips
-    voicesListEl.innerHTML = "";
-    voices.forEach((v: { id: string; label: string; is_clone: boolean; tags: string[] }) => {
-      const chip = document.createElement("div");
-      chip.className = "voice-badge-card";
-      chip.innerHTML = `
-        <span>${v.label}</span>
-        <span class="v-type">${v.is_clone ? "Clone" : "Design"}</span>
-      `;
-      chip.onclick = () => {
-        voiceIdInput.value = v.id;
-        voiceLabelInput.value = v.label;
-        voiceSelect.value = v.id;
-      };
-      voicesListEl.appendChild(chip);
-    });
+    renderVoicesChips();
   } catch (err) {
     console.error("Could not fetch voices:", err);
   }
 }
 
-// Initial health check & voices
+// Initial initialization
+applyLanguage(currentLang);
+
 void fetch("/healthz")
   .then((r) => r.json())
   .then((health) => {
@@ -540,6 +677,6 @@ void fetch("/healthz")
     profileBadge.textContent = `${health.profile} · ${health.device}`;
     profileBadge.className = `badge ${health.profile === "gpu" ? "ok" : "warn"}`;
   })
-  .catch(() => setStatus("gateway unreachable", "warn"));
+  .catch(() => setStatus(t().statusUnreachable, "warn"));
 
 void refreshVoicesList();
