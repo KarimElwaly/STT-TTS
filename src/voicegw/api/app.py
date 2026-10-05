@@ -189,7 +189,10 @@ async def create_voice(
     data = await file.read()
     if not data:
         raise HTTPException(400, "empty audio file")
-    audio = decode_audio(data, target_sr=16000)
+    try:
+        audio = decode_audio(data, target_sr=16000)
+    except Exception as exc:
+        raise HTTPException(400, f"Failed to decode audio: {exc}") from exc
     wav_bytes = encode_wav(audio, 16000)
     try:
         voice = core.voices.add_voice(
@@ -226,7 +229,11 @@ async def describe_audio(file: UploadFile = File(...)):
     data = await file.read()
     if not data:
         raise HTTPException(400, "empty audio file")
-    audio = decode_audio(data, target_sr=16000)
+    try:
+        audio = decode_audio(data, target_sr=16000)
+    except Exception as exc:
+        log.warning("Audio decoding failed in /v1/voices/describe: %s", exc)
+        raise HTTPException(400, f"Failed to decode audio: {exc}") from exc
     description, metrics = describe_voice(audio, 16000)
     return {
         "description": description,

@@ -28,17 +28,69 @@ def resample(audio: np.ndarray, orig_sr: int, target_sr: int = SAMPLE_RATE_IN) -
 
 
 def decode_audio(data: bytes, target_sr: int = SAMPLE_RATE_IN) -> np.ndarray:
-    """Decode an audio file (wav/flac/ogg/mp3/...) to float32 mono at ``target_sr``."""
+    """Decode an audio file (wav/flac/ogg/mp3/webm/...) to float32 mono at ``target_sr``."""
     import soundfile as sf
 
     try:
         samples, sr = sf.read(io.BytesIO(data), dtype="float32", always_2d=False)
+        return resample(to_mono(np.asarray(samples)), sr, target_sr)
     except Exception:
-        # soundfile can't read mp3/m4a on every platform; fall back to librosa/audioread.
+        pass
+
+    # Try torchaudio if available
+    try:
+        import torchaudio
+
+        tensor, sr = torchaudio.load(io.BytesIO(data))
+        samples = tensor.numpy()
+        return resample(to_mono(samples), sr, target_sr)
+    except Exception:
+        pass
+
+    # Try librosa
+    try:
         import librosa
 
         samples, sr = librosa.load(io.BytesIO(data), sr=target_sr, mono=True)
-    return resample(to_mono(np.asarray(samples)), sr, target_sr)
+        return resample(to_mono(np.asarray(samples)), sr, target_sr)
+    except Exception:
+        pass
+
+    # Try ffmpeg via subprocess if available on PATH
+    import shutil
+    import subprocess
+
+    if shutil.which("ffmpeg"):
+        try:
+            proc = subprocess.run(
+                [
+                    "ffmpeg",
+                    "-nostdin",
+                    "-threads",
+                    "1",
+                    "-i",
+                    "pipe:0",
+                    "-f",
+                    "s16le",
+                    "-ac",
+                    "1",
+                    "-ar",
+                    str(target_sr),
+                    "pipe:1",
+                ],
+                input=data,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                check=True,
+            )
+            if proc.stdout:
+                return pcm16_to_float32(proc.stdout)
+        except Exception:
+            pass
+
+    raise ValueError(
+        "Could not decode audio data. Ensure the audio is a valid WAV, FLAC, OGG, WebM, or MP3 file."
+    )
 
 
 def load_audio_file(path: str, target_sr: int = SAMPLE_RATE_IN) -> np.ndarray:

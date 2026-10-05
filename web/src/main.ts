@@ -426,6 +426,76 @@ let audioCtx: AudioContext | null = null;
 let analyser: AnalyserNode | null = null;
 let sourceNode: MediaStreamAudioSourceNode | null = null;
 
+function audioBufferToWav(buffer: AudioBuffer): Blob {
+  const numChannels = 1; // force mono for voice models
+  const sampleRate = buffer.sampleRate;
+  const format = 1; // PCM
+  const bitDepth = 16;
+
+  const length = buffer.length;
+  const samples = new Float32Array(length);
+  if (buffer.numberOfChannels === 1) {
+    samples.set(buffer.getChannelData(0));
+  } else {
+    for (let c = 0; c < buffer.numberOfChannels; c++) {
+      const channel = buffer.getChannelData(c);
+      for (let i = 0; i < length; i++) {
+        samples[i] += channel[i] / buffer.numberOfChannels;
+      }
+    }
+  }
+
+  const byteRate = (sampleRate * numChannels * bitDepth) / 8;
+  const blockAlign = (numChannels * bitDepth) / 8;
+  const dataSize = length * (bitDepth / 8);
+  const bufferSize = 44 + dataSize;
+  const arrayBuffer = new ArrayBuffer(bufferSize);
+  const view = new DataView(arrayBuffer);
+
+  const writeString = (offset: number, str: string) => {
+    for (let i = 0; i < str.length; i++) {
+      view.setUint8(offset + i, str.charCodeAt(i));
+    }
+  };
+
+  writeString(0, "RIFF");
+  view.setUint32(4, 36 + dataSize, true);
+  writeString(8, "WAVE");
+  writeString(12, "fmt ");
+  view.setUint32(16, 16, true); // Subchunk1Size (16 for PCM)
+  view.setUint16(20, format, true); // AudioFormat (1 = PCM)
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, byteRate, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, bitDepth, true);
+  writeString(36, "data");
+  view.setUint32(40, dataSize, true);
+
+  let offset = 44;
+  for (let i = 0; i < length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    offset += 2;
+  }
+
+  return new Blob([view], { type: "audio/wav" });
+}
+
+async function convertBlobToWav(blob: Blob): Promise<Blob> {
+  try {
+    const arrayBuffer = await blob.arrayBuffer();
+    const decodeCtx = new (window.AudioContext ||
+      (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+    const audioBuffer = await decodeCtx.decodeAudioData(arrayBuffer);
+    await decodeCtx.close();
+    return audioBufferToWav(audioBuffer);
+  } catch (err) {
+    console.warn("AudioContext decode fallback, using raw blob:", err);
+    return blob;
+  }
+}
+
 function drawVisualizer() {
   if (!analyser || !canvasCtx) return;
   const bufferLength = analyser.frequencyBinCount;
@@ -473,7 +543,8 @@ recBtn.onclick = async () => {
       if (audioCtx) void audioCtx.close();
 
       stream.getTracks().forEach((track) => track.stop());
-      recordedBlob = new Blob(audioChunks, { type: "audio/wav" });
+      const rawBlob = new Blob(audioChunks, { type: mediaRecorder?.mimeType || "audio/webm" });
+      recordedBlob = await convertBlobToWav(rawBlob);
       playRecBtn.disabled = false;
       saveBtn.disabled = false;
       testBtn.disabled = false;
@@ -520,7 +591,8 @@ playRecBtn.onclick = () => {
 
 fileUpload.onchange = async () => {
   if (fileUpload.files && fileUpload.files[0]) {
-    recordedBlob = fileUpload.files[0];
+    const file = fileUpload.files[0];
+    recordedBlob = await convertBlobToWav(file);
     playRecBtn.disabled = false;
     saveBtn.disabled = false;
     testBtn.disabled = false;

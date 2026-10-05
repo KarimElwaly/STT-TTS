@@ -6,21 +6,43 @@
       "label": "Female, young adult, Arabic",
       "language": "ar",
       "description": "female, young adult, moderate pitch",
-      "tags": ["design", "ar", "female"]
+      "tags": [
+        "design",
+        "ar",
+        "female"
+      ]
     },
     {
       "id": "male_deep",
       "label": "Male, middle-aged, low pitch, Arabic",
       "language": "ar",
       "description": "male, middle-aged, low pitch",
-      "tags": ["design", "ar", "male"]
+      "tags": [
+        "design",
+        "ar",
+        "male"
+      ]
     },
     {
       "id": "narrator_en",
       "label": "Narrator, British English",
       "language": "en",
       "description": "male, middle-aged, low pitch, british accent",
-      "tags": ["design", "en", "male"]
+      "tags": [
+        "design",
+        "en",
+        "male"
+      ]
+    },
+    {
+      "id": "TEST",
+      "label": "Karim",
+      "language": "en",
+      "ref_audio": "TEST.wav",
+      "ref_text": "ايه الاخبار عامل ايه كله كويس\r\nالحمدلله \r\n بسم الله واحد اتنين تلاتة اربعة خمسم ستة سبعة تمانية تسعة عشرة",
+      "tags": [
+        "clone"
+      ]
     }
   ]
 }
