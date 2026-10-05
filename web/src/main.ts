@@ -88,6 +88,7 @@ const voicesListEl = $<HTMLElement>("studio-voices-list");
 
 let socket: WebSocket | undefined;
 let assistantTurn: HTMLDivElement | undefined;
+let pendingUserTurn: HTMLDivElement | undefined;
 let rawVoices: Array<{ id: string; label: string; is_clone: boolean; tags: string[] }> = [];
 
 const player = new StreamPlayer((playing) => {
@@ -274,7 +275,9 @@ function handleEvent(event: any): void {
       profileBadge.className = `badge ${event.profile === "gpu" ? "ok" : "warn"}`;
       engineBadge.textContent = `${event.asr_engine} → ${event.tts_engine}`;
       voiceSelect.replaceChildren(...event.voices.map((id: string) => new Option(id, id)));
-      useAgent.checked = event.agent;
+      const savedAgent = localStorage.getItem("voicegw_agent");
+      useAgent.checked = savedAgent !== null ? savedAgent === "true" : false;
+      send({ type: "config", agent: useAgent.checked });
       if (!event.agent_available) {
         useAgent.checked = false;
         useAgent.disabled = true;
@@ -287,10 +290,28 @@ function handleEvent(event: any): void {
       setStatus(cur.statusListening, "ok");
       player.flush();
       break;
+    case "speech_stopped":
+      setStatus(cur.statusTranscribing || "transcribing…", "ok");
+      if (!pendingUserTurn) {
+        pendingUserTurn = addTurn("user", cur.statusTranscribing || "🎙️ ...");
+        pendingUserTurn.classList.add("pending");
+      }
+      break;
     case "transcript.final":
-      setStatus(cur.statusThinking);
+      setStatus(useAgent.checked ? cur.statusThinking : cur.statusConnected, "ok");
       hudAsr.textContent = event.latency_ms ? `${event.latency_ms} ms` : "—";
-      if (event.text) addTurn("user", event.text);
+      if (pendingUserTurn) {
+        if (event.text) {
+          pendingUserTurn.classList.remove("pending");
+          const whoSpan = pendingUserTurn.querySelector(".who");
+          pendingUserTurn.replaceChildren(whoSpan ?? document.createTextNode(""), document.createTextNode(event.text));
+        } else {
+          pendingUserTurn.remove();
+        }
+        pendingUserTurn = undefined;
+      } else if (event.text) {
+        addTurn("user", event.text);
+      }
       assistantTurn = undefined;
       break;
     case "response.text.delta":
@@ -308,6 +329,10 @@ function handleEvent(event: any): void {
       break;
     case "response.cancelled":
       player.flush();
+      if (pendingUserTurn) {
+        pendingUserTurn.remove();
+        pendingUserTurn = undefined;
+      }
       setStatus(`${cur.statusCancelled} (${event.reason})`, "warn");
       break;
     case "error":
@@ -342,6 +367,11 @@ const stopTalking = () => {
   talkBtn.classList.remove("active");
   mic.setMuted(true);
   send({ type: "commit" });
+  setStatus(t().statusTranscribing || "transcribing…", "ok");
+  if (!pendingUserTurn) {
+    pendingUserTurn = addTurn("user", t().statusTranscribing || "🎙️ ...");
+    pendingUserTurn.classList.add("pending");
+  }
 };
 
 talkBtn.addEventListener("pointerdown", startTalking);
@@ -354,7 +384,10 @@ openMic.onchange = () => {
 };
 
 voiceSelect.onchange = () => send({ type: "config", voice: voiceSelect.value });
-useAgent.onchange = () => send({ type: "config", agent: useAgent.checked });
+useAgent.onchange = () => {
+  localStorage.setItem("voicegw_agent", useAgent.checked ? "true" : "false");
+  send({ type: "config", agent: useAgent.checked });
+};
 
 const speakTyped = () => {
   const text = sayText.value.trim();
@@ -373,6 +406,10 @@ sayText.addEventListener("keydown", (e) => {
 
 stopBtn.onclick = () => {
   player.flush();
+  if (pendingUserTurn) {
+    pendingUserTurn.remove();
+    pendingUserTurn = undefined;
+  }
   send({ type: "cancel" });
 };
 

@@ -34,6 +34,8 @@ def serve(
     host: str | None = None,
     port: int | None = None,
     profile: Profile | None = typer.Option(None, help="Override VOICEGW_PROFILE."),
+    stt: str | None = typer.Option(None, "--stt", help="Override VOICEGW_ASR_ENGINE (e.g. cohere-asr-cpu, faster-whisper)."),
+    tts: str | None = typer.Option(None, "--tts", help="Override VOICEGW_TTS_ENGINE (e.g. omnivoice-cpu, omnivoice-gguf, piper)."),
     reload: bool = False,
     verbose: bool = False,
 ) -> None:
@@ -45,6 +47,17 @@ def serve(
     _setup_logging(verbose)
     if profile is not None:
         os.environ["VOICEGW_PROFILE"] = profile.value
+        # If user explicitly requests a profile, don't inherit lingering session pins from previous runs
+        if stt is None and "VOICEGW_ASR_ENGINE" in os.environ:
+            del os.environ["VOICEGW_ASR_ENGINE"]
+        if tts is None and "VOICEGW_TTS_ENGINE" in os.environ:
+            del os.environ["VOICEGW_TTS_ENGINE"]
+        get_settings.cache_clear()
+    if stt is not None:
+        os.environ["VOICEGW_ASR_ENGINE"] = stt
+        get_settings.cache_clear()
+    if tts is not None:
+        os.environ["VOICEGW_TTS_ENGINE"] = tts
         get_settings.cache_clear()
 
     settings = get_settings()

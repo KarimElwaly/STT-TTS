@@ -409,6 +409,18 @@ progress::-webkit-progress-value {
   background: linear-gradient(90deg, rgba(58, 122, 254, 0.05), var(--panel));
 }
 
+.turn.user.pending {
+  opacity: 0.75;
+  border-inline-start: 4px dashed var(--accent);
+  animation: pulse-transcribing 1.5s infinite ease-in-out;
+}
+
+@keyframes pulse-transcribing {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 0.95; }
+}
+
+
 .turn.assistant {
   border-inline-start: 4px solid var(--ok);
   background: linear-gradient(90deg, rgba(46, 213, 115, 0.05), var(--panel));

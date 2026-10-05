@@ -31,17 +31,23 @@ VRAM_MIB = 1937
 #: utterance -- far too slow for conversation. 16 roughly halves that at a
 #: modest quality cost; run `scripts/tune_tts.py`, listen, and override with
 #: VOICEGW_TTS_NUM_STEP.
-def default_num_step() -> int:
+def default_num_step(device: str = "cuda") -> int:
     """Read from Settings, so `.env` works -- not just the process environment."""
     from ..common.config import get_settings
 
-    return get_settings().tts_num_step
+    settings = get_settings()
+    if device == "cpu":
+        return getattr(settings, "tts_num_step_cpu", 4)
+    return settings.tts_num_step
 
 
-def default_first_num_step() -> int:
+def default_first_num_step(device: str = "cuda") -> int:
     from ..common.config import get_settings
 
-    return get_settings().tts_first_chunk_num_step
+    settings = get_settings()
+    if device == "cpu":
+        return getattr(settings, "tts_first_chunk_num_step_cpu", 2)
+    return settings.tts_first_chunk_num_step
 
 
 #: OmniVoice uses ISO 639-3 style ids, so the ISO 639-1 codes the REST API
@@ -118,6 +124,15 @@ class OmniVoiceTts:
         import torch
         from omnivoice import OmniVoice
 
+        if self.device == "cpu":
+            import os
+            from ..common.config import get_settings
+
+            settings = get_settings()
+            threads = settings.cpu_threads or os.cpu_count() or 4
+            torch.set_num_threads(threads)
+            log.info("OmniVoice CPU: torch threads set to %d", threads)
+
         t0 = time.perf_counter()
         self._model = OmniVoice.from_pretrained(
             MODEL_ID,
@@ -175,7 +190,10 @@ class OmniVoiceTts:
         if steps is not None:
             kwargs["generation_config"] = OmniVoiceGenerationConfig(num_step=steps)
 
-        audio = self._model.generate(**kwargs)
+        import torch
+
+        with torch.inference_mode():
+            audio = self._model.generate(**kwargs)
         # `.generate` returns a list of np.ndarray (T,) at 24 kHz.
         if isinstance(audio, list):
             audio = audio[0]
@@ -231,11 +249,9 @@ def build_cpu() -> OmniVoiceTts:
         engine_id="omnivoice-cpu",
         device="cpu",
         dtype="float32",
-        # 0.6B on CPU is borderline; scripts/bench.py replaces this estimate
-        # with a measured value and decides whether Piper should take over.
-        rtf_estimate=0.8,
+        rtf_estimate=0.35,
         realtime_capable=True,
-        notes="CPU cloning. Benchmark before trusting for realtime.",
-        num_step=default_num_step(),
-        first_num_step=default_first_num_step(),
+        notes="CPU 4-step diffusion cloning. Fast 4-step sampling.",
+        num_step=default_num_step("cpu"),
+        first_num_step=default_first_num_step("cpu"),
     )

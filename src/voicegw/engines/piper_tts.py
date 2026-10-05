@@ -81,10 +81,18 @@ class PiperTts:
         return int(getattr(cfg, "sample_rate", PIPER_SAMPLE_RATE))
 
     def _generate(self, text: str) -> np.ndarray:
-        buf = bytearray()
-        for chunk in self._voice.synthesize_stream_raw(text):
-            buf.extend(chunk)
-        return np.frombuffer(bytes(buf), dtype="<i2").astype(np.float32) / 32768.0
+        chunks = []
+        if hasattr(self._voice, "synthesize"):
+            for chunk in self._voice.synthesize(text):
+                chunks.append(chunk.audio_float_array)
+        elif hasattr(self._voice, "synthesize_stream_raw"):
+            buf = bytearray()
+            for chunk in self._voice.synthesize_stream_raw(text):
+                buf.extend(chunk)
+            return np.frombuffer(bytes(buf), dtype="<i2").astype(np.float32) / 32768.0
+        if not chunks:
+            return np.zeros(0, dtype=np.float32)
+        return np.concatenate(chunks).astype(np.float32)
 
     def synthesize(self, text: str, voice: Voice, urgent: bool = False) -> Iterator[AudioChunk]:
         if voice.is_clone:

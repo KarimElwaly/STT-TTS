@@ -175,8 +175,36 @@ Show how easy it is for any application to consume `voicegw`:
 
 ---
 
+---
+
+## ⚡ Dual Operational Modes (Cohere ASR + OmniVoice)
+
+`voicegw` provides two dedicated, production-ready operational modes for running **Cohere Transcribe Arabic** and **OmniVoice**:
+
+### Mode 1: Original Models on GPU (CUDA)
+* **Engines:** **Original `cohere-asr`** (PyTorch conformer on CUDA) + **Original `omnivoice`** (PyTorch fp16 on CUDA, 16/8 steps).
+* **VRAM Footprint:** ~3.3 GB total (shared residency, fits comfortably on 6 GB RTX 4050/3060).
+* **Latency:** **~792 ms sub-second turn latency**.
+* **Launch Command:**
+  ```powershell
+  python -m voicegw.cli serve --profile gpu --stt cohere-asr --tts omnivoice --port 8005
+  ```
+
+### Mode 2: Memory-Optimized CPU Mode
+* **Engines:** **Optimized `cohere-asr-cpu`** (bfloat16 16-bit, bounded tokens, ~4.1 GB RAM) + **Optimized `omnivoice-cpu`** / `omnivoice-gguf` (4-step diffusion, ~1.2 GB RAM).
+* **RAM Footprint:** ~5.3 GB total (prevents 98% RAM exhaustion; eliminates SSD page thrashing).
+* **CPU Tuning:** Uses `VOICEGW_CPU_THREADS` across all CPU cores with `torch.inference_mode()`.
+* **Latency:** ~1.8s first audio chunk / ~3.5s full turn.
+* **Launch Command:**
+  ```powershell
+  python -m voicegw.cli serve --profile cpu --stt cohere-asr-cpu --tts omnivoice-cpu --port 8005
+  ```
+
+---
+
 ## 💡 Troubleshooting & Presenter Tips
 
 * **Microphone Muted:** If the level meter isn't moving, check browser microphone permissions in Chrome/Edge settings.
 * **Low GPU VRAM Alert:** If the system is started on a machine with insufficient VRAM, `voicegw` automatically selects `--profile cpu` or exclusive swapping mode.
 * **Testing without Microphone:** Use the **Speak** input field on the conversation tab to run pure TTS without background room noise.
+

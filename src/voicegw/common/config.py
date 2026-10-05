@@ -116,6 +116,13 @@ class Settings(BaseSettings):
     #: earlier audio is still playing, so only this one is worth degrading.
     #: Set equal to ``tts_num_step`` to disable the asymmetry.
     tts_first_chunk_num_step: int = 8
+    #: OmniVoice diffusion steps on CPU -- reduced from 16 to 4 to cut CPU compute by 75%.
+    tts_num_step_cpu: int = 4
+    tts_first_chunk_num_step_cpu: int = 2
+    #: Number of CPU threads for PyTorch/CTranslate2. None = auto (utilize all available cores).
+    cpu_threads: int | None = None
+    #: Precision for CPU PyTorch models ("bfloat16" cuts RAM in half vs "float32").
+    cpu_dtype: str = "bfloat16"
     #: Override the faster-whisper size for both profiles (e.g. "medium").
     whisper_model: str | None = None
 

@@ -149,6 +149,7 @@ class RealtimeSession:
                     # Barge-in: the user talked over the assistant.
                     await self._cancel_response("barge_in")
             elif event == "utterance" and payload is not None:
+                await self.send(type="speech_stopped")
                 await self._handle_utterance(payload)
 
     async def _on_control(self, raw: str) -> None:
@@ -166,6 +167,7 @@ class RealtimeSession:
             if utterance is None:
                 await self.send(type="transcript.final", text="", reason="no_speech")
             else:
+                await self.send(type="speech_stopped")
                 await self._handle_utterance(utterance)
         elif kind == "cancel":
             await self._cancel_response("client_cancel")
@@ -215,6 +217,14 @@ class RealtimeSession:
             latency_ms=round((time.perf_counter() - t0) * 1000),
         )
         if not transcript.text.strip():
+            return
+        if not self.use_agent:
+            # Pure ASR live transcription: emit transcript and finish without triggering assistant/TTS
+            await self.send(
+                type="response.done",
+                text="",
+                total_ms=round((time.perf_counter() - t0) * 1000),
+            )
             return
         await self._cancel_response("new_turn")
         self._response = asyncio.create_task(self._respond(transcript.text))

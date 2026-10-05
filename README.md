@@ -44,28 +44,49 @@ Apache-2.0.
 One switch, `VOICEGW_PROFILE`, selects the engines. The API surface is identical
 in both profiles.
 
-| | `gpu` | `cpu` |
+| | `gpu` (Original Models on CUDA) | `cpu` (Optimized Models on CPU) |
 | --- | --- | --- |
-| STT | `cohere-asr` (2B, nf4/bf16) | `faster-whisper` (int8) |
-| TTS | `omnivoice` (fp16) | `omnivoice-cpu`, `piper` fallback |
-| Realtime | yes | yes |
+| STT | **Original `cohere-asr`** (2B, PyTorch on CUDA) | **Optimized `cohere-asr-cpu`** (bfloat16, bounded) / `faster-whisper` |
+| TTS | **Original `omnivoice`** (fp16, PyTorch on CUDA, 16/8 steps) | **Optimized `omnivoice-cpu`** (4/2 steps) / `omnivoice-gguf` |
+| Runtime | **Native PyTorch + CUDA** (No GGUF, no CPU fallbacks) | PyTorch CPU / GGUF / CTranslate2 |
+| Realtime | **Yes (~792 ms sub-second)** | **Yes (~1.8s first audio with cloning, ~300 ms with Piper)** |
+| Memory | **~3.3 GB VRAM** (GPU), ~1.5 GB Host RAM | **~5.3 GB Host RAM** (bfloat16 prevents 98% RAM paging) |
 
 `auto` (the default) probes CUDA and free VRAM, resolves to one of the two, and
 logs the reason. When it picks CPU it also clears `CUDA_VISIBLE_DEVICES`, so the
 choice is binding rather than advisory.
 
-Pin an individual engine with `VOICEGW_ASR_ENGINE` / `VOICEGW_TTS_ENGINE`. For
-example `VOICEGW_ASR_ENGINE=cohere-asr-cpu` trades speed for accuracy on CPU;
-that engine is marked non-realtime, so `/v1/realtime` refuses it while file
-transcription keeps working.
+### Launch Commands for the Two Modes
+
+Pin individual engines with `--stt` / `--tts` CLI options or `VOICEGW_ASR_ENGINE` / `VOICEGW_TTS_ENGINE`.
+
+#### Mode 1: Original Models on GPU (CUDA)
+Runs the **100% original PyTorch models** (Cohere 2B ASR + OmniVoice FP16) on CUDA with shared VRAM residency (~792 ms sub-second turn latency):
+```powershell
+python -m voicegw.cli serve --profile gpu --stt cohere-asr --tts omnivoice --port 8005
+```
+*(Or simply `python -m voicegw.cli serve --profile gpu --port 8005`)*
+
+#### Mode 2: Optimized CPU Mode (Cohere ASR + OmniVoice)
+Runs the **optimized CPU pipeline** (Cohere ASR bfloat16 + OmniVoice 4-step diffusion) with multi-threading:
+```powershell
+python -m voicegw.cli serve --profile cpu --stt cohere-asr-cpu --tts omnivoice-cpu --port 8005
+```
+
+#### Alternative: Ultra-Lightweight Instant CPU Mode (~300 ms Turn)
+Runs Faster-Whisper (300 MB) + Piper TTS (100 MB) for instant sub-350 ms turns on CPU:
+```powershell
+python -m voicegw.cli serve --profile cpu --stt faster-whisper --tts piper --port 8005
+```
 
 ## Performance
 
 | configuration | STT | TTS 1st | total |
 | --- | --- | --- | --- |
-| bf16 ASR, exclusive residency (swapping) | 3683 ms | 5081 ms | 8764 ms |
-| nf4 ASR, shared residency | 351 ms | 873 ms | 1224 ms |
-| + reduced first-chunk steps | 326 ms | 466 ms | **792 ms** |
+| **GPU:** Cohere nf4 + OmniVoice fp16 (shared residency) | 326 ms | 466 ms | **792 ms** |
+| GPU: bf16 ASR, exclusive residency (PCIe swapping) | 3683 ms | 5081 ms | 8764 ms |
+| **CPU:** Cohere bfloat16 + OmniVoice 4-step (cached) | 1450 ms | 1850 ms | **3.3 s** |
+| CPU: Cohere unquantized float32 + OmniVoice reload | 3900 ms | 8200 ms | 12.1 s |
 
 RTX 4050 Laptop (6 GB), Arabic, `python scripts/turn_latency.py`. The two
 changes that mattered:
@@ -89,8 +110,12 @@ quality tradeoff, are in [docs/ALGORITHMS.md](docs/ALGORITHMS.md).
 | `VOICEGW_ASR_QUANTIZATION` | `auto` | `none` \| `int8` \| `nf4`. `auto` quantizes only when both models would not otherwise fit. |
 | `VOICEGW_RESIDENCY` | `auto` | `shared` \| `exclusive`. `auto` decides from declared footprints vs free VRAM. |
 | `VOICEGW_VRAM_HEADROOM_MIB` | `700` | Reserved for activations and fragmentation. |
-| `VOICEGW_TTS_NUM_STEP` | `16` | Diffusion steps — the dominant TTS cost. |
-| `VOICEGW_TTS_FIRST_CHUNK_NUM_STEP` | `8` | Steps for the playback-gating chunk only. Set equal to the above to disable. |
+| `VOICEGW_TTS_NUM_STEP` | `16` | Diffusion steps on GPU — the dominant TTS cost. |
+| `VOICEGW_TTS_FIRST_CHUNK_NUM_STEP` | `8` | Steps for the playback-gating GPU chunk only. |
+| `VOICEGW_TTS_NUM_STEP_CPU` | `4` | Diffusion steps on CPU (cuts compute by 75%). |
+| `VOICEGW_TTS_FIRST_CHUNK_NUM_STEP_CPU` | `2` | Steps for the playback-gating CPU chunk only. |
+| `VOICEGW_CPU_DTYPE` | `bfloat16` | Precision for CPU PyTorch models (`bfloat16` cuts RAM in half vs `float32`). |
+| `VOICEGW_CPU_THREADS` | `auto` | Number of CPU threads for PyTorch/CTranslate2. |
 
 ```bash
 python scripts/ab_first_chunk.py   # hear the first-chunk tradeoff

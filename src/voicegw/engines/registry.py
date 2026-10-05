@@ -63,9 +63,17 @@ def _omnivoice_gguf(res: ProfileResolution) -> Any:
     return omnivoice_gguf.build_cpu()
 
 
+def _cohere_cpu_int8(_res: ProfileResolution) -> Any:
+    from . import cohere_asr
+    from ..common.config import Quantization
+
+    return cohere_asr.build_cpu(quantization=Quantization.INT8)
+
+
 STT_ENGINES: dict[str, Callable[[ProfileResolution], Any]] = {
     "cohere-asr": _cohere_gpu,
     "cohere-asr-cpu": _cohere_cpu,
+    "cohere-asr-cpu-int8": _cohere_cpu_int8,
     "faster-whisper": _whisper,
 }
 
@@ -88,8 +96,8 @@ PROFILE_DEFAULTS: dict[Profile, dict[str, str]] = {
 
 #: Used when the requested voice is not supported by the primary engine.
 TTS_ALTERNATES: dict[Profile, list[str]] = {
-    Profile.GPU: ["omnivoice"],
-    Profile.CPU: ["omnivoice-cpu", "piper"],
+    Profile.GPU: ["omnivoice", "omnivoice-gguf"],
+    Profile.CPU: ["omnivoice-cpu", "omnivoice-gguf", "piper"],
 }
 
 

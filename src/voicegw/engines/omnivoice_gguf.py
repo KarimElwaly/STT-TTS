@@ -39,16 +39,21 @@ class OmniVoiceGgufEngine:
         device: str = "cpu",
         quantization: str = DEFAULT_QUANT,
         bin_path: str | None = None,
+        num_step: int = 4,
+        first_num_step: int = 2,
     ) -> None:
         self.device = device
         self.quantization = quantization
         self.bin_path = bin_path or os.environ.get("VOICEGW_OMNIVOICE_BIN")
+        self.num_step = num_step
+        self.first_num_step = first_num_step
         self._model_path: Path | None = None
         self._tokenizer_path: Path | None = None
+        self._fallback_engine = None
         self._loaded = False
 
         vram = VRAM_MIB_MAP.get(quantization, 945) if device != "cpu" else 0
-        rtf = 0.12 if device != "cpu" else 0.45
+        rtf = 0.12 if device != "cpu" else 0.25
         self.info = EngineInfo(
             engine_id="omnivoice-gguf",
             model_id=f"{GGUF_REPO_ID}:{quantization}",
@@ -56,7 +61,7 @@ class OmniVoiceGgufEngine:
             dtype=quantization,
             rtf_estimate=rtf,
             realtime_capable=True,
-            notes=f"C++/GGML runtime ({quantization}). High efficiency, low VRAM.",
+            notes=f"C++/GGML runtime ({quantization}, {num_step}-step). High efficiency, low latency.",
             allocator="cuda" if device != "cpu" else "none",
             vram_mib=vram,
             movable=False,
@@ -67,6 +72,14 @@ class OmniVoiceGgufEngine:
             return
         if not self.bin_path:
             self.bin_path = shutil.which("omnivoice-tts") or shutil.which("omnivoice.exe")
+        if not self.bin_path or not Path(self.bin_path).exists():
+            from .omnivoice_tts import build_cpu, build_gpu
+
+            if self.device != "cpu":
+                self._fallback_engine = build_gpu(self.device)
+            else:
+                self._fallback_engine = build_cpu()
+            self._fallback_engine.load()
         self._loaded = True
         log.info(
             "OmniVoice GGUF initialized (device=%s, quant=%s, binary=%s)",
@@ -76,14 +89,20 @@ class OmniVoiceGgufEngine:
         )
 
     def unload(self) -> None:
+        if self._fallback_engine is not None:
+            self._fallback_engine.unload()
+            self._fallback_engine = None
         self._loaded = False
 
     def supports(self, voice: Voice) -> bool:
         # Supports both cloning and voice design tags
         return True
 
-    def _render_chunk_audio(self, text: str, voice: Voice, speed: float = 1.0) -> np.ndarray:
+    def _render_chunk_audio(
+        self, text: str, voice: Voice, speed: float = 1.0, urgent: bool = False
+    ) -> np.ndarray:
         """Render a single text chunk using the GGUF binary, or fallback if binary not present."""
+        steps = self.first_num_step if urgent else self.num_step
         if self.bin_path and Path(self.bin_path).exists():
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as out_wav:
                 out_path = out_wav.name
@@ -94,6 +113,8 @@ class OmniVoiceGgufEngine:
                     text,
                     "--output",
                     out_path,
+                    "--steps",
+                    str(steps),
                 ]
                 if voice.ref_audio:
                     cmd.extend(["--ref-audio", voice.ref_audio])
@@ -122,17 +143,17 @@ class OmniVoiceGgufEngine:
                     except OSError:
                         pass
 
-        # Fallback path if binary is not installed: try PyTorch omnivoice_tts or synthetic signal
-        try:
-            from .omnivoice_tts import build_cpu
-
-            py_engine = build_cpu()
-            py_engine.load()
-            samples_list = [c.samples for c in py_engine.synthesize(text, voice)]
-            if samples_list:
-                return np.concatenate(samples_list)
-        except Exception:
-            pass
+        # Fallback path if binary is not installed: use cached PyTorch engine
+        if self._fallback_engine is not None:
+            try:
+                samples_list = [
+                    c.samples
+                    for c in self._fallback_engine.synthesize(text, voice, urgent=urgent)
+                ]
+                if samples_list:
+                    return np.concatenate(samples_list)
+            except Exception as exc:
+                log.warning("Fallback synthesis failed: %s", exc)
 
         # Pure synthetic speech-like placeholder for tests/mock environments
         duration_s = max(0.4, len(text) * 0.05 / speed)
@@ -165,7 +186,7 @@ class OmniVoiceGgufEngine:
             if not cleaned_text:
                 continue
 
-            audio = self._render_chunk_audio(cleaned_text, voice, speed)
+            audio = self._render_chunk_audio(cleaned_text, voice, speed, urgent=urgent and idx == 0)
             yield AudioChunk(
                 samples=audio,
                 sample_rate=SAMPLE_RATE_OUT,
@@ -174,8 +195,8 @@ class OmniVoiceGgufEngine:
 
 
 def build_gpu(device: str = "cuda") -> OmniVoiceGgufEngine:
-    return OmniVoiceGgufEngine(device=device, quantization="Q8_0")
+    return OmniVoiceGgufEngine(device=device, quantization="Q8_0", num_step=8, first_num_step=4)
 
 
 def build_cpu() -> OmniVoiceGgufEngine:
-    return OmniVoiceGgufEngine(device="cpu", quantization="Q8_0")
+    return OmniVoiceGgufEngine(device="cpu", quantization="Q8_0", num_step=4, first_num_step=2)

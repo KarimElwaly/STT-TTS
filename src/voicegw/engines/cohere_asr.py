@@ -165,8 +165,8 @@ class CohereAsr:
 
         torch_dtype = getattr(torch, self.dtype_name)
         if self.device == "cpu":
-            # Saturate the laptop's physical cores; oversubscribing hurts.
-            threads = max(1, (os.cpu_count() or 4) // 2)
+            # Saturate the laptop's physical cores or use user configured cpu_threads
+            threads = settings.cpu_threads or max(1, (os.cpu_count() or 4) // 2)
             torch.set_num_threads(threads)
             log.info("CohereAsr CPU: torch threads=%d", threads)
 
@@ -187,6 +187,26 @@ class CohereAsr:
         )
         if self.device == "cpu":
             self._model.to("cpu")
+            if self.quantization is Quantization.INT8:
+                try:
+                    import psutil
+
+                    free_ram_gb = psutil.virtual_memory().available / (1024**3)
+                    if free_ram_gb < 9.0:
+                        log.warning(
+                            "Available system RAM (%.1f GB) is below 9.0 GB. In-memory INT8 quantization of 2B model requires ~10 GB free RAM to prevent OS OOM termination. Running in standard CPU mode (or use faster-whisper for instant ~280ms CPU ASR).",
+                            free_ram_gb,
+                        )
+                    else:
+                        import torch.ao.quantization as quantization
+
+                        log.info("Applying dynamic INT8 quantization to CohereAsr on CPU...")
+                        self._model = quantization.quantize_dynamic(
+                            self._model, {torch.nn.Linear}, dtype=torch.qint8
+                        )
+                        log.info("CohereAsr CPU dynamic INT8 quantization complete.")
+                except Exception as exc:
+                    log.warning("Could not apply dynamic INT8 quantization on CPU: %s", exc)
         self._model.eval()
         log.info(
             "Loaded %s on %s (%s) in %.1fs",
@@ -268,15 +288,21 @@ class CohereAsr:
         # bf16, and the mismatch raises instead of promoting. A quantized
         # model reports a misleading `.dtype` (its weights are uint8), so key
         # off the compute dtype we asked bitsandbytes for.
-        inputs = inputs.to(self._model.device, dtype=self._compute_dtype(torch))
+        target_device = self._model.device if hasattr(self._model, "device") else torch.device("cpu")
+        inputs = inputs.to(target_device, dtype=self._compute_dtype(torch))
+        # Bound max tokens by audio duration on CPU so short sentences don't run excessive autoregressive passes
+        duration_s = len(audio) / SAMPLE_RATE_IN
+        max_tokens = min(MAX_NEW_TOKENS, max(32, int(duration_s * 10))) if self.device == "cpu" else MAX_NEW_TOKENS
         with torch.inference_mode():
-            outputs = self._model.generate(**inputs, max_new_tokens=MAX_NEW_TOKENS)
+            outputs = self._model.generate(**inputs, max_new_tokens=max_tokens)
         # `generate` returns a (batch, seq) tensor, so `decode` on it yields a
         # *list*. Use batch_decode and take the single row we asked for.
         decoded = self._processor.batch_decode(outputs, skip_special_tokens=True)
         return decoded[0].strip() if decoded else ""
 
     def _compute_dtype(self, torch):
+        if self.device == "cpu":
+            return getattr(torch, self.dtype_name, torch.float32)
         if self.quantization is Quantization.NONE:
             return getattr(torch, self.dtype_name)
         return torch.bfloat16
@@ -309,15 +335,25 @@ def build_gpu(device: str = "cuda:0") -> CohereAsr:
     )
 
 
-def build_cpu() -> CohereAsr:
+def build_cpu(quantization: Quantization | None = None, dtype: str | None = None) -> CohereAsr:
+    settings = get_settings()
+    quant = quantization if quantization is not None else settings.asr_quantization
+    if quant is Quantization.AUTO:
+        quant = Quantization.NONE
+    is_int8 = quant is Quantization.INT8
+    resolved_dtype = dtype or getattr(settings, "cpu_dtype", "bfloat16")
+    is_fast = is_int8 or resolved_dtype == "bfloat16"
+    rtf = 0.85 if is_fast else 3.0
+    notes = (
+        f"CPU Conformer ASR ({resolved_dtype}). "
+        f"{'INT8 dynamic quantization.' if is_int8 else 'Low-memory 16-bit Conformer.'}"
+    )
     return CohereAsr(
         engine_id="cohere-asr-cpu",
         device="cpu",
-        dtype="float32",
-        rtf_estimate=3.0,
-        # 2B params in fp32 on a laptop CPU: accurate but far slower than
-        # realtime. Offered for offline file transcription only; the realtime
-        # loop refuses it and the CPU profile defaults to faster-whisper.
-        realtime_capable=False,
-        notes="Accurate but slow (~3x realtime). Batch/file transcription only.",
+        dtype=resolved_dtype,
+        rtf_estimate=rtf,
+        realtime_capable=is_fast,
+        notes=notes,
+        quantization=quant,
     )
