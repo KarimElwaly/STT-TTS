@@ -11,6 +11,7 @@ Runs fully local. Measured **792 ms** from end-of-speech to first audio on a
 
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — how the pieces fit and why
 - **[docs/ALGORITHMS.md](docs/ALGORITHMS.md)** — the measurements behind every tuning decision
+- **[docs/DEMO_GUIDE.md](docs/DEMO_GUIDE.md)** — step-by-step presentation & demo walkthrough with examples
 
 ## Quick start
 
